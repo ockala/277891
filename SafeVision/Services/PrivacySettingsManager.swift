@@ -2,6 +2,7 @@ import Combine
 import CoreGraphics
 import Foundation
 import UIKit
+import ZIPFoundation
 
 /// 一组隐私设置快照（预设）。`labelEffects` 存 `MaskEffect.rawValue`，
 /// 缺失的标签在应用时回退到预设的 `defaultEffect`。
@@ -1012,127 +1013,36 @@ private func applyManifestLabelState(
 /// 与 deflate（method 8）两种压缩方式。只读 `manifest.json` 与
 /// `stickers/` 下的文件。拒绝 `..` 路径；单文件与总大小有上限。
 /// （Foundation 没有内置 ZIP API，因此这里手写最小实现。）
+/// 最小 ZIP 读取器（ZIPFoundation 实现）。
+///
+/// 只做一件事：按名取一个条目的解压后内容。ZIPFoundation 的 `Archive`
+/// 直接读内存里的 zip 数据，stored（method 0）和 deflate（method 8）
+/// 都支持。之前手写 ZIP 解析 + libz C 解压（`ZipInflate.c`）的方案在
+/// run #63 链接失败（`ZipInflate.c` 没被编进目标，`_SVZipInflateRawDeflate`
+/// 未定义），已彻底移除，改走纯 Swift 的 ZIPFoundation。
 private struct ZipArchive {
-    private struct Entry {
-        let name: String
-        let method: UInt16
-        let compressedSize: Int
-        let uncompressedSize: Int
-        let localHeaderOffset: Int
-    }
-
-    private let data: Data
-    private let entries: [String: Entry]
+    private let archive: Archive
 
     /// 单个解压后文件的大小上限（32 MB）。
-    private static let maxEntrySize = 32 * 1024 * 1024
+    private static let maxEntrySize: UInt64 = 32 * 1024 * 1024
 
     init?(data: Data) {
-        // 找 EOCD（从文件尾向前搜，最多 64KB 注释区）。
-        let eocdSignature: UInt32 = 0x06054b50
-        let minEOCDSize = 22
-        guard data.count >= minEOCDSize else { return nil }
-        var eocdOffset: Int? = nil
-        let searchStart = max(0, data.count - minEOCDSize - 65535)
-        var i = data.count - minEOCDSize
-        while i >= searchStart {
-            if ZipArchive.readUInt32(data, at: i) == eocdSignature {
-                eocdOffset = i
-                break
-            }
-            i -= 1
-        }
-        guard let eocd = eocdOffset else { return nil }
-        // 中央目录的条目数与偏移。
-        guard let totalEntries = ZipArchive.readUInt16(data, at: eocd + 10),
-              let cdOffset = ZipArchive.readUInt32(data, at: eocd + 16) else { return nil }
-        var offset = Int(cdOffset)
-        var parsed: [String: Entry] = [:]
-        for _ in 0 ..< Int(totalEntries) {
-            guard ZipArchive.readUInt32(data, at: offset) == 0x02014b50,
-                  let method = ZipArchive.readUInt16(data, at: offset + 10),
-                  let compressedSize = ZipArchive.readUInt32(data, at: offset + 20),
-                  let uncompressedSize = ZipArchive.readUInt32(data, at: offset + 24),
-                  let nameLength = ZipArchive.readUInt16(data, at: offset + 28),
-                  let extraLength = ZipArchive.readUInt16(data, at: offset + 30),
-                  let commentLength = ZipArchive.readUInt16(data, at: offset + 32),
-                  let localHeaderOffset = ZipArchive.readUInt32(data, at: offset + 42) else { return nil }
-            let nameStart = offset + 46
-            let nameEnd = nameStart + Int(nameLength)
-            guard nameEnd <= data.count,
-                  let name = String(data: data[nameStart..<nameEnd], encoding: .utf8) else { return nil }
-            // 拒绝逃逸路径。
-            if name.contains("..") || name.hasPrefix("/") { return nil }
-            parsed[name] = Entry(
-                name: name,
-                method: method,
-                compressedSize: Int(compressedSize),
-                uncompressedSize: Int(uncompressedSize),
-                localHeaderOffset: Int(localHeaderOffset))
-            offset = nameEnd + Int(extraLength) + Int(commentLength)
-        }
-        self.data = data
-        self.entries = parsed
+        guard let archive = try? Archive(data: data, accessMode: .read) else { return nil }
+        self.archive = archive
     }
 
-    /// 按名取一个条目的解压后内容；不存在 / 不支持的压缩方式 / 超限返回 nil。
+    /// 按名取一个条目的解压后内容；不存在 / 解压失败 / 超限返回 nil。
     func data(forEntryNamed name: String) -> Data? {
-        guard let entry = entries[name] else { return nil }
+        // 拒绝逃逸路径。
+        if name.contains("..") || name.hasPrefix("/") { return nil }
+        guard let entry = archive[name] else { return nil }
         guard entry.uncompressedSize <= Self.maxEntrySize else { return nil }
-        // 读本地文件头，定位压缩数据。
-        let localOffset = entry.localHeaderOffset
-        guard ZipArchive.readUInt32(data, at: localOffset) == 0x04034b50,
-              let nameLength = ZipArchive.readUInt16(data, at: localOffset + 26),
-              let extraLength = ZipArchive.readUInt16(data, at: localOffset + 28) else { return nil }
-        let dataStart = localOffset + 30 + Int(nameLength) + Int(extraLength)
-        let dataEnd = dataStart + entry.compressedSize
-        guard dataStart <= data.count, dataEnd <= data.count else { return nil }
-        let compressed = data[dataStart..<dataEnd]
-        switch entry.method {
-        case 0:
-            return Data(compressed)
-        case 8:
-            return ZipArchive.inflateRawDeflate(Data(compressed), expectedSize: entry.uncompressedSize)
-        default:
+        var result = Data()
+        do {
+            try archive.extract(entry) { chunk in result.append(chunk) }
+        } catch {
             return nil
         }
-    }
-
-    // MARK: - 小端整数读取
-
-    private static func readUInt16(_ data: Data, at offset: Int) -> UInt16? {
-        guard offset >= 0, offset + 2 <= data.count else { return nil }
-        return UInt16(data[offset]) | (UInt16(data[offset + 1]) << 8)
-    }
-
-    private static func readUInt32(_ data: Data, at offset: Int) -> UInt32? {
-        guard offset >= 0, offset + 4 <= data.count else { return nil }
-        return UInt32(data[offset])
-            | (UInt32(data[offset + 1]) << 8)
-            | (UInt32(data[offset + 2]) << 16)
-            | (UInt32(data[offset + 3]) << 24)
-    }
-
-    // MARK: - deflate 解压
-
-    /// 解压 raw deflate 数据。ZIP 的 method 8 是裸 deflate 流（无 zlib
-    /// 头、无 Adler32），`Compression` 框架只提供 zlib 流接口——之前用
-    /// “补 zlib 头 + 假 Adler32” 的 trick 赌解码器报错时输出还在，实测
-    /// 会丢掉全部输出（manifest.json 解不出来就报“预设包里没有
-    /// manifest.json”）。现在改走系统 libz（`ZipInflate.c`，
-    /// `inflateInit2(&strm, -15)`），真正的 raw-deflate 解压。
-    private static func inflateRawDeflate(_ raw: Data, expectedSize: Int) -> Data? {
-        if expectedSize == 0 { return Data() }
-        guard expectedSize > 0, !raw.isEmpty else { return nil }
-        var outLength = 0
-        return raw.withUnsafeBytes { inputBuffer -> Data? in
-            guard let base = inputBuffer.baseAddress?.assumingMemoryBound(to: UInt8.self),
-                  let outPtr = SVZipInflateRawDeflate(base, raw.count, expectedSize, &outLength) else {
-                return nil
-            }
-            defer { free(outPtr) }
-            guard outLength == expectedSize else { return nil }
-            return Data(bytes: outPtr, count: outLength)
-        }
+        return result
     }
 }
