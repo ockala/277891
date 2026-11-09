@@ -45,228 +45,265 @@ struct SettingsView: View {
             .joined(separator: "、")
     }
 
+    // MARK: - Body 拆分
+    // body 曾因单个表达式过大导致类型检查超时；每个 Section
+    // 拆成独立的计算属性，body 只做组合。
+    private var modelSection: some View {
+        // MARK: - 模型
+        Section(localizedKey("label_model")) {
+            Picker(localizedKey("label_model"),
+                   selection: $appSettings.modelProfile) {
+                ForEach(LabelProfile.allCases, id: \.self) { profile in
+                    Text(profile.displayName).tag(profile)
+                }
+            }
+            .pickerStyle(.segmented)
+        }
+    }
+
+    private var labelsSection: some View {
+        // MARK: - 标签设置
+        Section(localizedKey("label_labels")) {
+            ForEach(labels, id: \.self) { label in
+                LabelSettingsRow(label: label)
+            }
+        }
+    }
+
+    private var maskParamsSection: some View {
+        // MARK: - 打码参数
+        Section(localizedKey("label_mask_params")) {
+            Picker(localizedKey("label_default_effect"),
+                   selection: $privacy.defaultEffect) {
+                ForEach(MaskEffect.allCases, id: \.self) { effect in
+                    Text(effect.displayName).tag(effect)
+                }
+            }
+            HStack {
+                Text(localizedKey("label_mosaic_block_size"))
+                Slider(value: Binding(
+                    get: { Double(privacy.mosaicBlockSize) },
+                    set: { privacy.mosaicBlockSize = Int($0) }
+                ), in: 12...60, step: 1)
+                Text("\(privacy.mosaicBlockSize)")
+                    .monospacedDigit()
+                    .frame(width: 32, alignment: .trailing)
+            }
+            HStack {
+                Text(localizedKey("label_gaussian_radius"))
+                Slider(value: Binding(
+                    get: { Double(privacy.gaussianRadius) },
+                    set: { privacy.gaussianRadius = Int($0) }
+                ), in: 6...50, step: 1)
+                Text("\(privacy.gaussianRadius)")
+                    .monospacedDigit()
+                    .frame(width: 32, alignment: .trailing)
+            }
+            HStack {
+                Text(localizedKey("label_mask_scale"))
+                Slider(value: Binding(
+                    get: { Double(privacy.maskScale) },
+                    set: { privacy.maskScale = CGFloat($0) }
+                ), in: 0.1...3, step: 0.1)
+                Text(String(format: "%.1fx", privacy.maskScale))
+                    .monospacedDigit()
+                    .frame(width: 40, alignment: .trailing)
+            }
+            Toggle(localizedKey("label_circular_mask"),
+                   isOn: $privacy.circularMaskEnabled)
+        }
+    }
+
+    private var stickerSection: some View {
+        // MARK: - 贴纸
+        Section(localizedKey("label_sticker")) {
+            LabeledContent(localizedKey("label_current_sticker"),
+                           value: currentStickerName)
+            PhotosPicker(selection: $stickerItem, matching: .images) {
+                Label(localizedKey("action_pick_custom_sticker"),
+                      systemImage: "photo")
+                    .foregroundColor(.red)
+            }
+            .onChange(of: stickerItem) { _, newItem in
+                guard let newItem else { return }
+                Task {
+                    if let data = try? await newItem.loadTransferable(type: Data.self),
+                       let relativePath = StickerLoader.saveCustomSticker(
+                           data: data, fileName: "sticker.png") {
+                        await MainActor.run {
+                            privacy.stickerUri = relativePath
+                        }
+                    }
+                }
+            }
+            Button(localizedKey("action_use_default_sticker")) {
+                privacy.stickerUri = nil
+            }
+            .buttonStyle(.bordered)
+        }
+    }
+
+    private var outlineSection: some View {
+        // MARK: - 遮挡红边
+        Section(localizedKey("label_outline")) {
+            Toggle(localizedKey("label_outline_enabled"),
+                   isOn: $privacy.maskOutlineEnabled)
+            Button(localizedKey("action_outline_labels")) {
+                showingOutlinePicker = true
+            }
+            .disabled(!privacy.maskOutlineEnabled)
+        }
+    }
+
+    private var reverseSection: some View {
+        // MARK: - 反向遮挡
+        Section(localizedKey("label_reverse")) {
+            Button(localizedKey("action_reverse_labels")) {
+                showingReversePicker = true
+            }
+            Text(reverseLabelsSummary)
+                .font(.caption)
+                .foregroundColor(.secondary)
+            Toggle(localizedKey("label_reverse_pre_render"),
+                   isOn: $privacy.reversePreRenderEnabled)
+            Toggle(localizedKey("label_reverse_miss_fullscreen"),
+                   isOn: $privacy.reverseLabelMissFullscreenEnabled)
+            Toggle(localizedKey("label_empty_fullscreen"),
+                   isOn: $privacy.accessibilityEmptyReverseFullscreenEnabled)
+        }
+    }
+
+    private var presetsSection: some View {
+        // MARK: - 预设
+        Section(localizedKey("label_presets")) {
+            LabeledContent(localizedKey("preset_current"),
+                           value: currentPresetName)
+            if privacy.presets.isEmpty {
+                Text(localizedKey("preset_none"))
+                    .foregroundColor(.secondary)
+            } else {
+                ForEach(privacy.presets) { preset in
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(preset.name)
+                            if preset.isBuiltIn {
+                                Text(localizedKey("preset_builtin"))
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                        Spacer()
+                        if preset.id == privacy.activePresetID {
+                            Image(systemName: "checkmark")
+                                .foregroundColor(.accentColor)
+                        }
+                        Button(localizedKey("action_apply_preset")) {
+                            privacy.applyPreset(preset, profile: appSettings.modelProfile)
+                            noticeMessage = localizedFormat("preset_applied",
+                                                            preset.name)
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(preset.id == privacy.activePresetID)
+                        Button(role: .destructive) {
+                            presetToDelete = preset
+                        } label: {
+                            Text(localizedKey("action_delete"))
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(preset.isBuiltIn)
+                    }
+                }
+            }
+            Button {
+                showingPresetNamePrompt = true
+            } label: {
+                Label(localizedKey("action_save_preset"),
+                      systemImage: "plus")
+            }
+            Button {
+                showingPresetImporter = true
+            } label: {
+                Label(localizedKey("action_import_preset"),
+                      systemImage: "square.and.arrow.down")
+            }
+        }
+    }
+
+    private var videoSection: some View {
+        // MARK: - 视频
+        Section(localizedKey("label_video_section")) {
+            HStack {
+                Text(localizedKey("label_video_stride"))
+                Slider(value: Binding(
+                    get: { Double(appSettings.videoDetectStride) },
+                    set: { appSettings.videoDetectStride = Int($0) }
+                ), in: 1...30, step: 1)
+                Text("\(appSettings.videoDetectStride)")
+                    .monospacedDigit()
+                    .frame(width: 32, alignment: .trailing)
+            }
+        }
+    }
+
+    private var appearanceSection: some View {
+        // MARK: - 外观
+        Section(localizedKey("label_appearance")) {
+            Picker(localizedKey("label_appearance"),
+                   selection: $appSettings.theme) {
+                Text(localizedKey("theme_system")).tag(AppTheme.system)
+                Text(localizedKey("theme_light")).tag(AppTheme.light)
+                Text(localizedKey("theme_dark")).tag(AppTheme.dark)
+            }
+            .pickerStyle(.segmented)
+        }
+    }
+
+    private var languageSection: some View {
+        // MARK: - 语言
+        Section(localizedKey("label_language")) {
+            Picker(localizedKey("label_language"),
+                   selection: $appSettings.language) {
+                Text(localizedKey("language_system")).tag(AppLanguage.system)
+                Text(localizedKey("language_zh_hans")).tag(AppLanguage.zhHans)
+                Text(localizedKey("language_zh_hant")).tag(AppLanguage.zhHant)
+                Text(localizedKey("language_en")).tag(AppLanguage.en)
+                Text(localizedKey("language_ko")).tag(AppLanguage.ko)
+            }
+            .onChange(of: appSettings.language) { _, _ in
+                showingLanguageRestartNote = true
+            }
+        }
+    }
+
+    private var aboutSection: some View {
+        // MARK: - 关于
+        Section(localizedKey("label_about")) {
+            LabeledContent(localizedKey("label_version"), value: "2.1.12")
+            Text(localizedKey("label_about_text"))
+                .font(.subheadline)
+                .foregroundColor(.secondary)
+            Button(role: .destructive) {
+                showingResetConfirm = true
+            } label: {
+                Text(localizedKey("action_reset_defaults"))
+            }
+        }
+    }
+
     var body: some View {
         NavigationStack {
             Form {
-                // MARK: - 模型
-                Section(localizedKey("label_model")) {
-                    Picker(localizedKey("label_model"),
-                           selection: $appSettings.modelProfile) {
-                        ForEach(LabelProfile.allCases, id: \.self) { profile in
-                            Text(profile.displayName).tag(profile)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                }
-
-                // MARK: - 标签设置
-                Section(localizedKey("label_labels")) {
-                    ForEach(labels, id: \.self) { label in
-                        LabelSettingsRow(label: label)
-                    }
-                }
-
-                // MARK: - 打码参数
-                Section(localizedKey("label_mask_params")) {
-                    Picker(localizedKey("label_default_effect"),
-                           selection: $privacy.defaultEffect) {
-                        ForEach(MaskEffect.allCases, id: \.self) { effect in
-                            Text(effect.displayName).tag(effect)
-                        }
-                    }
-                    HStack {
-                        Text(localizedKey("label_mosaic_block_size"))
-                        Slider(value: Binding(
-                            get: { Double(privacy.mosaicBlockSize) },
-                            set: { privacy.mosaicBlockSize = Int($0) }
-                        ), in: 12...60, step: 1)
-                        Text("\(privacy.mosaicBlockSize)")
-                            .monospacedDigit()
-                            .frame(width: 32, alignment: .trailing)
-                    }
-                    HStack {
-                        Text(localizedKey("label_gaussian_radius"))
-                        Slider(value: Binding(
-                            get: { Double(privacy.gaussianRadius) },
-                            set: { privacy.gaussianRadius = Int($0) }
-                        ), in: 6...50, step: 1)
-                        Text("\(privacy.gaussianRadius)")
-                            .monospacedDigit()
-                            .frame(width: 32, alignment: .trailing)
-                    }
-                    HStack {
-                        Text(localizedKey("label_mask_scale"))
-                        Slider(value: Binding(
-                            get: { Double(privacy.maskScale) },
-                            set: { privacy.maskScale = CGFloat($0) }
-                        ), in: 0.1...3, step: 0.1)
-                        Text(String(format: "%.1fx", privacy.maskScale))
-                            .monospacedDigit()
-                            .frame(width: 40, alignment: .trailing)
-                    }
-                    Toggle(localizedKey("label_circular_mask"),
-                           isOn: $privacy.circularMaskEnabled)
-                }
-
-                // MARK: - 贴纸
-                Section(localizedKey("label_sticker")) {
-                    LabeledContent(localizedKey("label_current_sticker"),
-                                   value: currentStickerName)
-                    PhotosPicker(selection: $stickerItem, matching: .images) {
-                        Label(localizedKey("action_pick_custom_sticker"),
-                              systemImage: "photo")
-                            .foregroundColor(.red)
-                    }
-                    .onChange(of: stickerItem) { _, newItem in
-                        guard let newItem else { return }
-                        Task {
-                            if let data = try? await newItem.loadTransferable(type: Data.self),
-                               let relativePath = StickerLoader.saveCustomSticker(
-                                   data: data, fileName: "sticker.png") {
-                                await MainActor.run {
-                                    privacy.stickerUri = relativePath
-                                }
-                            }
-                        }
-                    }
-                    Button(localizedKey("action_use_default_sticker")) {
-                        privacy.stickerUri = nil
-                    }
-                    .buttonStyle(.bordered)
-                }
-
-                // MARK: - 遮挡红边
-                Section(localizedKey("label_outline")) {
-                    Toggle(localizedKey("label_outline_enabled"),
-                           isOn: $privacy.maskOutlineEnabled)
-                    Button(localizedKey("action_outline_labels")) {
-                        showingOutlinePicker = true
-                    }
-                    .disabled(!privacy.maskOutlineEnabled)
-                }
-
-                // MARK: - 反向遮挡
-                Section(localizedKey("label_reverse")) {
-                    Button(localizedKey("action_reverse_labels")) {
-                        showingReversePicker = true
-                    }
-                    Text(reverseLabelsSummary)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                    Toggle(localizedKey("label_reverse_pre_render"),
-                           isOn: $privacy.reversePreRenderEnabled)
-                    Toggle(localizedKey("label_reverse_miss_fullscreen"),
-                           isOn: $privacy.reverseLabelMissFullscreenEnabled)
-                    Toggle(localizedKey("label_empty_fullscreen"),
-                           isOn: $privacy.accessibilityEmptyReverseFullscreenEnabled)
-                }
-
-                // MARK: - 预设
-                Section(localizedKey("label_presets")) {
-                    LabeledContent(localizedKey("preset_current"),
-                                   value: currentPresetName)
-                    if privacy.presets.isEmpty {
-                        Text(localizedKey("preset_none"))
-                            .foregroundColor(.secondary)
-                    } else {
-                        ForEach(privacy.presets) { preset in
-                            HStack {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(preset.name)
-                                    if preset.isBuiltIn {
-                                        Text(localizedKey("preset_builtin"))
-                                            .font(.caption)
-                                            .foregroundColor(.secondary)
-                                    }
-                                }
-                                Spacer()
-                                if preset.id == privacy.activePresetID {
-                                    Image(systemName: "checkmark")
-                                        .foregroundColor(.accentColor)
-                                }
-                                Button(localizedKey("action_apply_preset")) {
-                                    privacy.applyPreset(preset, profile: appSettings.modelProfile)
-                                    noticeMessage = localizedFormat("preset_applied",
-                                                                    preset.name)
-                                }
-                                .buttonStyle(.bordered)
-                                .disabled(preset.id == privacy.activePresetID)
-                                Button(role: .destructive) {
-                                    presetToDelete = preset
-                                } label: {
-                                    Text(localizedKey("action_delete"))
-                                }
-                                .buttonStyle(.bordered)
-                                .disabled(preset.isBuiltIn)
-                            }
-                        }
-                    }
-                    Button {
-                        showingPresetNamePrompt = true
-                    } label: {
-                        Label(localizedKey("action_save_preset"),
-                              systemImage: "plus")
-                    }
-                    Button {
-                        showingPresetImporter = true
-                    } label: {
-                        Label(localizedKey("action_import_preset"),
-                              systemImage: "square.and.arrow.down")
-                    }
-                }
-
-                // MARK: - 视频
-                Section(localizedKey("label_video_section")) {
-                    HStack {
-                        Text(localizedKey("label_video_stride"))
-                        Slider(value: Binding(
-                            get: { Double(appSettings.videoDetectStride) },
-                            set: { appSettings.videoDetectStride = Int($0) }
-                        ), in: 1...30, step: 1)
-                        Text("\(appSettings.videoDetectStride)")
-                            .monospacedDigit()
-                            .frame(width: 32, alignment: .trailing)
-                    }
-                }
-
-                // MARK: - 外观
-                Section(localizedKey("label_appearance")) {
-                    Picker(localizedKey("label_appearance"),
-                           selection: $appSettings.theme) {
-                        Text(localizedKey("theme_system")).tag(AppTheme.system)
-                        Text(localizedKey("theme_light")).tag(AppTheme.light)
-                        Text(localizedKey("theme_dark")).tag(AppTheme.dark)
-                    }
-                    .pickerStyle(.segmented)
-                }
-
-                // MARK: - 语言
-                Section(localizedKey("label_language")) {
-                    Picker(localizedKey("label_language"),
-                           selection: $appSettings.language) {
-                        Text(localizedKey("language_system")).tag(AppLanguage.system)
-                        Text(localizedKey("language_zh_hans")).tag(AppLanguage.zhHans)
-                        Text(localizedKey("language_zh_hant")).tag(AppLanguage.zhHant)
-                        Text(localizedKey("language_en")).tag(AppLanguage.en)
-                        Text(localizedKey("language_ko")).tag(AppLanguage.ko)
-                    }
-                    .onChange(of: appSettings.language) { _, _ in
-                        showingLanguageRestartNote = true
-                    }
-                }
-
-                // MARK: - 关于
-                Section(localizedKey("label_about")) {
-                    LabeledContent(localizedKey("label_version"), value: "2.1.12")
-                    Text(localizedKey("label_about_text"))
-                        .font(.subheadline)
-                        .foregroundColor(.secondary)
-                    Button(role: .destructive) {
-                        showingResetConfirm = true
-                    } label: {
-                        Text(localizedKey("action_reset_defaults"))
-                    }
-                }
+                modelSection
+                labelsSection
+                maskParamsSection
+                stickerSection
+                outlineSection
+                reverseSection
+                presetsSection
+                videoSection
+                appearanceSection
+                languageSection
+                aboutSection
             }
             .navigationTitle(localizedKey("tab_settings"))
             .fileImporter(
