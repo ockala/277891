@@ -170,17 +170,26 @@ public final class DetectionEngine: ObservableObject {
 
     /// Returns a `.up`-oriented CGImage for a UIImage, redrawing only when
     /// the orientation is not already `.up`.
+    ///
+    /// 渲染尺寸必须用显示尺寸（`image.size` × scale，即旋转/镜像后的
+    /// 尺寸），不能用 raw 的 `cgImage.width/height`：90 度旋转的照片
+    /// raw 尺寸是横向、显示尺寸是竖向，用 raw 尺寸渲染会把图压扁，
+    /// 检测框坐标随之错位（表现为打码打偏）。
     private func normalizedCGImage(from image: UIImage) -> CGImage? {
         guard let cgImage = image.cgImage else { return nil }
         guard image.imageOrientation != .up else { return cgImage }
-        // Render at pixel size (not point size) so @2x/@3x images are not
-        // downsampled; scale 1 makes renderer points equal pixels.
-        let pixelSize = CGSize(width: cgImage.width, height: cgImage.height)
+        // 显示尺寸（点）× scale = 显示像素尺寸；对 90 度旋转的照片，
+        // 宽高已互换，与屏幕上看到的一致。
+        let displayPixelSize = CGSize(
+            width: image.size.width * image.scale,
+            height: image.size.height * image.scale
+        )
+        guard displayPixelSize.width > 0, displayPixelSize.height > 0 else { return nil }
         let format = UIGraphicsImageRendererFormat()
         format.scale = 1
-        let renderer = UIGraphicsImageRenderer(size: pixelSize, format: format)
+        let renderer = UIGraphicsImageRenderer(size: displayPixelSize, format: format)
         let normalized = renderer.image { _ in
-            image.draw(in: CGRect(origin: .zero, size: pixelSize))
+            image.draw(in: CGRect(origin: .zero, size: displayPixelSize))
         }
         return normalized.cgImage
     }

@@ -100,18 +100,10 @@ public enum DetectionConfig {
         return result
     }()
 
-    /// Labels that cannot be disabled in UI.
-    public static let standardLockedLabels: [String] = [
-        "FEMALE_GENITALIA_EXPOSED",
-        "FEMALE_BREAST_EXPOSED"
-    ]
-
-    public static let animeLockedLabels: [String] = [
-        "Boob",
-        "Pussy"
-    ]
-
-    public static let lockedLabels: [String] = standardLockedLabels + animeLockedLabels
+    /// 曾用于强制锁定部分标签（不可关闭）。已按用户要求取消锁定：
+    /// 所有标签都可自由开关，默认仍为开启（打码）。
+    /// 保留该注释以说明锁定机制已被整体移除。
+    public static let lockedLabels: [String] = []
 
     public static let displayNames: [String: String] = [
         "FEMALE_GENITALIA_COVERED": "女性私处（遮挡）",
@@ -182,11 +174,10 @@ public enum DetectionConfig {
         return displayNames[label] ?? label
     }
 
+    /// 锁定标签已取消（见 `lockedLabels`）：所有标签均可自由开关，
+    /// 该函数保留为空实现以便旧调用处无需改动。
     public static func lockedLabels(for profile: LabelProfile) -> [String] {
-        switch profile {
-        case .standard: return standardLockedLabels
-        case .anime: return animeLockedLabels
-        }
+        return []
     }
 
     public static func isEyeRegionLabel(_ label: String) -> Bool {
