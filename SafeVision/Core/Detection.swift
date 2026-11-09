@@ -1,4 +1,5 @@
 import CoreGraphics
+import Foundation
 
 /// A single YOLO detection, in original-image pixel coordinates.
 public struct Detection: Identifiable, Equatable {
