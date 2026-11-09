@@ -55,6 +55,8 @@ struct BrowserView: View {
     @State private var isLoading = false
     @State private var canGoBack = false
     @State private var canGoForward = false
+    @State private var loadErrorMessage = ""
+    @FocusState private var urlFieldFocused: Bool
     @State private var webView: WKWebView
 
     init() {
@@ -64,6 +66,9 @@ struct BrowserView: View {
     }
 
     private var statusText: String {
+        if !loadErrorMessage.isEmpty {
+            return loadErrorMessage
+        }
         if maskedCount > 0 {
             return localizedFormat("browser_masked_count", maskedCount)
         }
@@ -93,6 +98,7 @@ struct BrowserView: View {
                         .autocapitalization(.none)
                         .autocorrectionDisabled()
                         .keyboardType(.URL)
+                        .focused($urlFieldFocused)
                         .onSubmit { navigate() }
                     Button(localized("browser_go")) { navigate() }
                 }
@@ -106,7 +112,7 @@ struct BrowserView: View {
                     }
                     Text(statusText)
                         .font(.caption)
-                        .foregroundColor(.secondary)
+                        .foregroundColor(loadErrorMessage.isEmpty ? .secondary : .red)
                 }
                 .padding(.horizontal, 12)
                 .padding(.bottom, 8)
@@ -118,11 +124,24 @@ struct BrowserView: View {
                     isLoading: $isLoading,
                     canGoBack: $canGoBack,
                     canGoForward: $canGoForward,
-                    urlText: $urlText
+                    urlText: $urlText,
+                    loadErrorMessage: $loadErrorMessage
                 )
+                // WKWebView（UIScrollView 子类）没有内在尺寸，不给
+                // frame 会在 VStack 里被压成 0 高、整页只剩白底，
+                // 看起来像“假浏览器”：必须占满剩余空间。
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             .navigationTitle(localizedKey("tab_browser"))
             .navigationBarTitleDisplayMode(.inline)
+            // 首次打开浏览器时加载一个默认起始页：之前一进来就是白板，
+            // 用户以为浏览器是假的。
+            .onAppear {
+                if webView.url == nil {
+                    urlText = "https://www.bing.com"
+                    navigate()
+                }
+            }
         }
     }
 
@@ -132,7 +151,17 @@ struct BrowserView: View {
         if !text.contains("://") {
             text = "https://" + text
         }
-        guard let url = URL(string: text) else { return }
+        guard let url = URL(string: text) else {
+            loadErrorMessage = localized("browser_invalid_url")
+            return
+        }
+        // 点“前往”立刻给反馈：先收键盘、亮起“加载中”，再真正加载。
+        // 之前这里只调 webView.load，加载失败时代理静默吞掉错误，
+        // 状态栏一直停在“输入网址开始浏览”，看起来像点了没反应。
+        urlFieldFocused = false
+        loadErrorMessage = ""
+        maskedCount = 0
+        isLoading = true
         urlText = text
         webView.load(URLRequest(url: url))
     }
@@ -148,6 +177,7 @@ private struct BrowserWebView: UIViewRepresentable {
     @Binding var canGoBack: Bool
     @Binding var canGoForward: Bool
     @Binding var urlText: String
+    @Binding var loadErrorMessage: String
 
     /// 单张图片下载上限（8MB）。
     static let maxImageBytes = 8 * 1024 * 1024
@@ -248,6 +278,7 @@ private struct BrowserWebView: UIViewRepresentable {
 
         func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
             updateNavState(webView)
+            parent.loadErrorMessage = ""
             parent.maskedCount = 0
         }
 
@@ -259,6 +290,7 @@ private struct BrowserWebView: UIViewRepresentable {
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             updateNavState(webView)
             parent.isLoading = false
+            parent.loadErrorMessage = ""
             if let url = webView.url {
                 parent.urlText = url.absoluteString
             }
@@ -270,12 +302,24 @@ private struct BrowserWebView: UIViewRepresentable {
 
         func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
             parent.isLoading = false
+            parent.loadErrorMessage = localizedFormat(
+                "browser_load_failed", error.localizedDescription)
             updateNavState(webView)
         }
 
         func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
             parent.isLoading = false
+            // 加载失败必须说出来（比如 x.com 在国内直连打不开时），
+            // 否则白屏 + 状态栏不变，用户只能干等。
+            parent.loadErrorMessage = localizedFormat(
+                "browser_load_failed", error.localizedDescription)
             updateNavState(webView)
+        }
+
+        func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+            // WebContent 进程在 LiveContainer 沙盒里崩了会白屏，
+            // 自动重载恢复页面。
+            webView.reload()
         }
 
         private func updateNavState(_ webView: WKWebView) {

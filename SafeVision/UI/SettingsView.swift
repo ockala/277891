@@ -1,3 +1,4 @@
+import Foundation
 import PhotosUI
 import SwiftUI
 import UniformTypeIdentifiers
@@ -278,7 +279,7 @@ struct SettingsView: View {
     private var aboutSection: some View {
         // MARK: - 关于
         Section(localizedKey("label_about")) {
-            LabeledContent(localizedKey("label_version"), value: "2.1.12")
+            LabeledContent(localizedKey("label_version"), value: appVersionString)
             Text(localizedKey("label_about_text"))
                 .font(.subheadline)
                 .foregroundColor(.secondary)
@@ -288,6 +289,15 @@ struct SettingsView: View {
                 Text(localizedKey("action_reset_defaults"))
             }
         }
+    }
+
+    /// 安装包版本（短版本 + 构建号 + 修复轮次），用来确认手机上装的
+    /// 是不是最新编出来的那一版：比如 R2 没出现就是装错了旧包。
+    private var appVersionString: String {
+        let info = Bundle.main.infoDictionary
+        let shortVersion = info?["CFBundleShortVersionString"] as? String ?? "2.1.12"
+        let build = info?["CFBundleVersion"] as? String ?? ""
+        return build.isEmpty ? shortVersion : "\(shortVersion) (\(build)) · R2"
     }
 
     var body: some View {
@@ -399,12 +409,22 @@ struct SettingsView: View {
     // MARK: - 预设导入
 
     /// 从文件应用选 `.svpreset.zip`（或 `.zip`）导入预设。
+    /// 用 NSFileCoordinator 读文件：第三方文件提供者（如“小米互联”）
+    /// 的文件可能是远程的，直接 Data(contentsOf:) 会读失败，
+    /// coordinator 会先把文件下载到本地再读。
     private func importPreset(from url: URL) {
         let didAccess = url.startAccessingSecurityScopedResource()
         defer {
             if didAccess { url.stopAccessingSecurityScopedResource() }
         }
-        guard let data = try? Data(contentsOf: url) else {
+        var zipData: Data?
+        var readError: NSError?
+        NSFileCoordinator().coordinate(
+            readingItemAt: url, options: [], error: &readError
+        ) { coordinatedURL in
+            zipData = try? Data(contentsOf: coordinatedURL)
+        }
+        guard let data = zipData else {
             noticeMessage = localized("preset_import_failed_read")
             return
         }
