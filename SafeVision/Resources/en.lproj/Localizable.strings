@@ -1,1 +1,130 @@
-placeholder
+/* Safe Vision — English */
+
+/* Tabs */
+"tab_image" = "Photos";
+"tab_video" = "Video";
+"tab_batch" = "Batch";
+"tab_gallery" = "Gallery";
+"tab_settings" = "Settings";
+
+/* Actions */
+"action_select_image" = "Choose Photo";
+"action_take_photo" = "Take Photo";
+"action_select_video" = "Choose Video";
+"action_select_images" = "Choose Photos";
+"action_start_detection" = "Start Detection";
+"action_apply_mask" = "Apply Mask";
+"action_save_to_photos" = "Save to Photos";
+"action_save_to_app" = "Save in App";
+"action_start_processing" = "Start Processing";
+"action_cancel" = "Cancel";
+"action_process_all" = "Process All";
+"action_clear" = "Clear";
+"action_share" = "Share";
+"action_delete" = "Delete";
+"action_export_to_photos" = "Export to Photos";
+"action_save_preset" = "Save Preset";
+"action_apply_preset" = "Apply";
+"action_reset_defaults" = "Reset to Defaults";
+"action_done" = "Done";
+"action_close" = "Close";
+"action_confirm" = "Confirm";
+
+/* Status */
+"status_select_image_hint" = "Choose a photo to detect";
+"status_image_ready" = "Photo ready. You can start detection.";
+"status_detecting" = "Detecting, please wait…";
+"status_detection_done" = "Detected %d targets";
+"status_no_detection" = "No sensitive content detected";
+"status_mask_applied" = "Mask applied";
+"status_saved_to_photos" = "Saved to Photos";
+"status_saved_to_app" = "Saved in app: %@";
+"status_save_failed" = "Save failed: %@";
+"status_model_missing" = "Model file is missing. Please reinstall the app.";
+"status_model_load_failed" = "Failed to load model: %@";
+"status_detection_failed" = "Detection failed: %@";
+"status_no_image_selected" = "Please choose a photo first";
+"status_select_video_hint" = "Choose a video to process";
+"status_video_ready" = "Video ready. You can start processing.";
+"status_processing_video" = "Processing video, please wait…";
+"status_video_done" = "Video processing finished";
+"status_video_failed" = "Video processing failed: %@";
+"status_video_cancelled" = "Video processing cancelled";
+"status_batch_empty" = "No photos selected yet";
+"status_batch_empty_hint" = "Tap “Choose Photos” to add photos for batch processing.";
+"status_batch_progress" = "Processed %d/%d";
+"status_gallery_empty" = "No processed media yet";
+"status_gallery_empty_hint" = "Processed photos and videos will be saved here.";
+
+/* Labels */
+"label_tap_box_hint" = "Tap a detection box to adjust that label's mask effect.";
+"label_selected_label" = "Selected Label";
+"label_confidence" = "Confidence";
+"label_enabled" = "Enable Masking";
+"label_effect" = "Mask Effect";
+"label_scale" = "Scale";
+"label_locked" = "Locked";
+"label_default_effect" = "Default Mask Effect";
+"label_mosaic_block_size" = "Mosaic Block Size";
+"label_gaussian_radius" = "Gaussian Blur Radius";
+"label_video_stride" = "Detect Every N Frames";
+"label_appearance" = "Appearance";
+"label_language" = "Language";
+"label_about" = "About";
+"label_model" = "Model";
+"label_labels" = "Label Settings";
+"label_mask_params" = "Mask Parameters";
+"label_presets" = "Presets";
+"label_video_section" = "Video";
+"label_version" = "Version";
+"label_about_text" = "Detection runs locally. No photos or videos are uploaded. All processing happens on your device.";
+"label_language_restart_note" = "Language changed. Restart the app to apply.";
+"label_duration" = "Duration";
+"label_size" = "Size";
+"label_file_name" = "File Name";
+"label_video_info" = "Video Info";
+"label_progress_percent" = "Progress: %d%%";
+"label_no_mask_boxes" = "No boxes to mask yet";
+
+/* Batch status */
+"batch_status_pending" = "Pending";
+"batch_status_processing" = "Processing";
+"batch_status_done" = "Done: %d targets";
+"batch_status_failed" = "Failed: %@";
+
+/* Gallery */
+"gallery_delete_title" = "Delete Media";
+"gallery_delete_message" = "Delete %@?";
+"gallery_export_success" = "Exported to Photos";
+"gallery_export_failed" = "Export failed: %@";
+
+/* Presets */
+"preset_name_prompt" = "Enter a preset name";
+"preset_name_placeholder" = "Preset Name";
+"preset_saved" = "Preset saved: %@";
+"preset_applied" = "Preset applied: %@";
+"preset_deleted" = "Preset deleted: %@";
+"preset_builtin" = "Built-in";
+"preset_current" = "Current Preset";
+"preset_none" = "No saved presets yet";
+
+/* Theme */
+"theme_system" = "Follow System";
+"theme_light" = "Light";
+"theme_dark" = "Dark";
+
+/* Language */
+"language_system" = "Follow System";
+"language_zh_hans" = "Simplified Chinese";
+"language_zh_hant" = "Traditional Chinese";
+"language_en" = "English";
+"language_ko" = "Korean";
+
+/* Errors */
+"error_unknown" = "Unknown error";
+"error_load_image_failed" = "Failed to load photo: %@";
+"error_camera_unavailable" = "Camera unavailable";
+"error_photo_access_denied" = "Photo library access was not granted. Please enable it in Settings.";
+
+/* Common */
+"common_notice" = "Notice";
