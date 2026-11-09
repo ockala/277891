@@ -1,1 +1,130 @@
-placeholder
+/* Safe Vision — 繁體中文 */
+
+/* Tabs */
+"tab_image" = "圖片";
+"tab_video" = "影片";
+"tab_batch" = "批次";
+"tab_gallery" = "相簿";
+"tab_settings" = "設定";
+
+/* Actions */
+"action_select_image" = "選擇圖片";
+"action_take_photo" = "拍照";
+"action_select_video" = "選擇影片";
+"action_select_images" = "選擇圖片";
+"action_start_detection" = "開始偵測";
+"action_apply_mask" = "套用遮罩";
+"action_save_to_photos" = "儲存到相簿";
+"action_save_to_app" = "儲存到 App 內";
+"action_start_processing" = "開始處理";
+"action_cancel" = "取消";
+"action_process_all" = "全部處理";
+"action_clear" = "清空";
+"action_share" = "分享";
+"action_delete" = "刪除";
+"action_export_to_photos" = "匯出到相簿";
+"action_save_preset" = "儲存預設";
+"action_apply_preset" = "套用";
+"action_reset_defaults" = "恢復預設值";
+"action_done" = "完成";
+"action_close" = "關閉";
+"action_confirm" = "確認";
+
+/* Status */
+"status_select_image_hint" = "請選擇一張圖片進行偵測";
+"status_image_ready" = "圖片已就緒，可以開始偵測。";
+"status_detecting" = "偵測中，請稍候…";
+"status_detection_done" = "偵測到 %d 個目標";
+"status_no_detection" = "未偵測到敏感內容";
+"status_mask_applied" = "已套用遮罩";
+"status_saved_to_photos" = "已儲存到相簿";
+"status_saved_to_app" = "已儲存到 App 內：%@";
+"status_save_failed" = "儲存失敗：%@";
+"status_model_missing" = "模型檔案遺失，請重新安裝 App";
+"status_model_load_failed" = "模型載入失敗：%@";
+"status_detection_failed" = "偵測失敗：%@";
+"status_no_image_selected" = "請先選擇圖片";
+"status_select_video_hint" = "請選擇一個影片進行處理";
+"status_video_ready" = "影片已就緒，可以開始處理。";
+"status_processing_video" = "影片處理中，請稍候…";
+"status_video_done" = "影片處理完成";
+"status_video_failed" = "影片處理失敗：%@";
+"status_video_cancelled" = "影片處理已取消";
+"status_batch_empty" = "尚未選擇圖片";
+"status_batch_empty_hint" = "點「選擇圖片」加入要批次處理的圖片。";
+"status_batch_progress" = "已處理 %d/%d 張";
+"status_gallery_empty" = "沒有已處理的媒體";
+"status_gallery_empty_hint" = "處理過的圖片和影片會儲存在這裡。";
+
+/* Labels */
+"label_tap_box_hint" = "點按偵測框可調整該標籤的遮擋效果。";
+"label_selected_label" = "已選標籤";
+"label_confidence" = "信心度";
+"label_enabled" = "啟用遮擋";
+"label_effect" = "遮擋效果";
+"label_scale" = "放大倍率";
+"label_locked" = "已鎖定";
+"label_default_effect" = "預設遮擋效果";
+"label_mosaic_block_size" = "馬賽克區塊大小";
+"label_gaussian_radius" = "高斯模糊半徑";
+"label_video_stride" = "每 N 幀偵測一次";
+"label_appearance" = "外觀";
+"label_language" = "語言";
+"label_about" = "關於";
+"label_model" = "模型";
+"label_labels" = "標籤設定";
+"label_mask_params" = "遮擋參數";
+"label_presets" = "預設";
+"label_video_section" = "影片";
+"label_version" = "版本";
+"label_about_text" = "本機偵測，不會上傳任何圖片或影片。所有處理均在裝置上完成。";
+"label_language_restart_note" = "語言已切換，重新啟動 App 後生效。";
+"label_duration" = "時長";
+"label_size" = "尺寸";
+"label_file_name" = "檔案名稱";
+"label_video_info" = "影片資訊";
+"label_progress_percent" = "進度：%d%%";
+"label_no_mask_boxes" = "尚無可遮擋的偵測框";
+
+/* Batch status */
+"batch_status_pending" = "等待中";
+"batch_status_processing" = "處理中";
+"batch_status_done" = "完成 %d 個目標";
+"batch_status_failed" = "失敗：%@";
+
+/* Gallery */
+"gallery_delete_title" = "刪除媒體";
+"gallery_delete_message" = "確定要刪除 %@ 嗎？";
+"gallery_export_success" = "匯出成功，已儲存到系統相簿";
+"gallery_export_failed" = "匯出失敗：%@";
+
+/* Presets */
+"preset_name_prompt" = "請輸入預設名稱";
+"preset_name_placeholder" = "預設名稱";
+"preset_saved" = "預設已儲存：%@";
+"preset_applied" = "已切換預設：%@";
+"preset_deleted" = "已刪除預設：%@";
+"preset_builtin" = "內建";
+"preset_current" = "目前預設";
+"preset_none" = "尚無已儲存的預設";
+
+/* Theme */
+"theme_system" = "跟隨系統";
+"theme_light" = "淺色";
+"theme_dark" = "深色";
+
+/* Language */
+"language_system" = "跟隨系統";
+"language_zh_hans" = "簡體中文";
+"language_zh_hant" = "繁體中文";
+"language_en" = "English";
+"language_ko" = "한국어";
+
+/* Errors */
+"error_unknown" = "未知錯誤";
+"error_load_image_failed" = "載入圖片失敗：%@";
+"error_camera_unavailable" = "相機無法使用";
+"error_photo_access_denied" = "相簿寫入權限未授予，請在系統設定中開啟";
+
+/* Common */
+"common_notice" = "提示";
