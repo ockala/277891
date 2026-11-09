@@ -55,7 +55,11 @@ public enum ImagePreprocessor {
         let scaledWidth = CGFloat(width) * scale
         let scaledHeight = CGFloat(height) * scale
 
-        guard let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) else {
+        // 色彩空间用原图的（不要强制 sRGB）：iPhone 照片常为 Display P3，
+        // 画进 sRGB 上下文会被做 P3→sRGB 颜色转换，像素值偏离安卓
+        // Canvas（不做色彩空间转换）喂给模型的值；取不到时回退 sRGB。
+        let colorSpace = cgImage.colorSpace ?? CGColorSpace(name: CGColorSpace.sRGB)
+        guard let colorSpace else {
             throw PreprocessError.contextCreationFailed
         }
         let bytesPerRow = inputSize * 4
@@ -66,7 +70,7 @@ public enum ImagePreprocessor {
             bitsPerComponent: 8,
             bytesPerRow: bytesPerRow,
             space: colorSpace,
-            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue
                 | CGBitmapInfo.byteOrder32Big.rawValue
         ) else {
             throw PreprocessError.contextCreationFailed
@@ -82,14 +86,15 @@ public enum ImagePreprocessor {
         // is upright and output row 0 corresponds to the image top.
         context.translateBy(x: 0, y: CGFloat(inputSize))
         context.scaleBy(x: 1, y: -1)
-        context.interpolationQuality = .default
+        context.interpolationQuality = .high
         context.draw(cgImage, in: CGRect(x: 0, y: 0, width: scaledWidth, height: scaledHeight))
 
         guard let data = context.data else { throw PreprocessError.pixelReadFailed }
         let bytes = data.bindMemory(to: UInt8.self, capacity: inputSize * inputSize * 4)
 
-        // Byte order is RGBA (32Big + premultipliedLast). RGB channels are
-        // adjacent per pixel, i.e. NHWC; divide by 255 like Android.
+        // 字节序是 RGBX（32Big + noneSkipLast）：每像素 4 字节，RGB 通道
+        // 相邻（即 NHWC）；除以 255，与安卓一致。JPEG/HEIC 本来不透明，
+        // noneSkipLast 不做 alpha 预乘，不会压暗 RGB。
         var pixels: [Float] = []
         pixels.reserveCapacity(inputSize * inputSize * 3)
         for i in 0..<(inputSize * inputSize) {
