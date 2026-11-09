@@ -22,7 +22,6 @@
 		BEAEA56DCB2F88EAA8CAD5E0 /* BatchProcessingManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8E3E5F76744B428F43B456E6 /* BatchProcessingManager.swift */; };
 		BC2481B8AC5571D3B595D0BB /* MediaSaveHelper.swift in Sources */ = {isa = PBXBuildFile; fileRef = DE2BBF25EE8E1AD0EBB65228 /* MediaSaveHelper.swift */; };
 		CEDF0C9DB13314065C22DE42 /* PrivacySettingsManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F055A12129C9E8148D56F3A /* PrivacySettingsManager.swift */; };
-		BDF9CA9B861DF109EB47421F /* ZipInflate.c in Sources */ = {isa = PBXBuildFile; fileRef = 05EB56799AB61F1103C66A74 /* ZipInflate.c */; };
 		8236B497FA328F3998A039F3 /* VideoFrameInterpolator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3E3329F417046B51E824DD89 /* VideoFrameInterpolator.swift */; };
 		478EFC1654216BECBCF50FEE /* VideoProcessor.swift in Sources */ = {isa = PBXBuildFile; fileRef = DE3AD18CD040C0AB4E032449 /* VideoProcessor.swift */; };
 		73C637C4980350B6E3046533 /* BatchView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 26527E40B4B698FB7F96B1CE /* BatchView.swift */; };
@@ -45,7 +44,6 @@
 		92C614406B523C1556971670 /* Photos.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A8EFDC827696DE4017E46934 /* Photos.framework */; };
 		34A8CE5D8F7105207075E70E /* PhotosUI.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 58F5D116D468C84F789921B6 /* PhotosUI.framework */; };
 		F57A6D88539EC2B488D3D500 /* CoreImage.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = CCD3BE1932ABF67B7A59CCEF /* CoreImage.framework */; };
-		E9977F92909B5C3ACA16695C /* libz.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = B50618EA1CE38253AC3C0398 /* libz.tbd */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -64,9 +62,6 @@
 		8E3E5F76744B428F43B456E6 /* BatchProcessingManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BatchProcessingManager.swift; sourceTree = "<group>"; };
 		DE2BBF25EE8E1AD0EBB65228 /* MediaSaveHelper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaSaveHelper.swift; sourceTree = "<group>"; };
 		0F055A12129C9E8148D56F3A /* PrivacySettingsManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PrivacySettingsManager.swift; sourceTree = "<group>"; };
-		05EB56799AB61F1103C66A74 /* ZipInflate.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c; path = ZipInflate.c; sourceTree = "<group>"; };
-		19BEB6FE103A37BB623E51E4 /* ZipInflate.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ZipInflate.h; sourceTree = "<group>"; };
-		9A8222B8F23A15BE45164285 /* SafeVision-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = SafeVision-Bridging-Header.h; sourceTree = "<group>"; };
 		3E3329F417046B51E824DD89 /* VideoFrameInterpolator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoFrameInterpolator.swift; sourceTree = "<group>"; };
 		DE3AD18CD040C0AB4E032449 /* VideoProcessor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoProcessor.swift; sourceTree = "<group>"; };
 		26527E40B4B698FB7F96B1CE /* BatchView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BatchView.swift; sourceTree = "<group>"; };
@@ -90,7 +85,6 @@
 		A8EFDC827696DE4017E46934 /* Photos.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Photos.framework; path = System/Library/Frameworks/Photos.framework; sourceTree = SDKROOT; };
 		58F5D116D468C84F789921B6 /* PhotosUI.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = PhotosUI.framework; path = System/Library/Frameworks/PhotosUI.framework; sourceTree = SDKROOT; };
 		CCD3BE1932ABF67B7A59CCEF /* CoreImage.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreImage.framework; path = System/Library/Frameworks/CoreImage.framework; sourceTree = SDKROOT; };
-		B50618EA1CE38253AC3C0398 /* libz.tbd */ = {isa = PBXFileReference; lastKnownFileType = archive.tbd; name = libz.tbd; path = usr/lib/libz.tbd; sourceTree = SDKROOT; };
 		BE5B2C055745F143EEF3CBB3 /* SafeVision.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = SafeVision.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -104,7 +98,6 @@
 				92C614406B523C1556971670 /* Photos.framework in Frameworks */,
 				34A8CE5D8F7105207075E70E /* PhotosUI.framework in Frameworks */,
 				F57A6D88539EC2B488D3D500 /* CoreImage.framework in Frameworks */,
-				E9977F92909B5C3ACA16695C /* libz.tbd in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -139,7 +132,6 @@
 				A1C86A29E589D48EC70B6A32 /* Models */,
 				887A6F90336FF23D95C3914B /* Resources */,
 				6F272EDC2FABF8B10C290DDD /* Info.plist */,
-				9A8222B8F23A15BE45164285 /* SafeVision-Bridging-Header.h */,
 			);
 			path = SafeVision;
 			sourceTree = "<group>";
@@ -175,8 +167,6 @@
 				8E3E5F76744B428F43B456E6 /* BatchProcessingManager.swift */,
 				DE2BBF25EE8E1AD0EBB65228 /* MediaSaveHelper.swift */,
 				0F055A12129C9E8148D56F3A /* PrivacySettingsManager.swift */,
-				05EB56799AB61F1103C66A74 /* ZipInflate.c */,
-				19BEB6FE103A37BB623E51E4 /* ZipInflate.h */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -323,7 +313,6 @@
 				BEAEA56DCB2F88EAA8CAD5E0 /* BatchProcessingManager.swift in Sources */,
 				BC2481B8AC5571D3B595D0BB /* MediaSaveHelper.swift in Sources */,
 				CEDF0C9DB13314065C22DE42 /* PrivacySettingsManager.swift in Sources */,
-				BDF9CA9B861DF109EB47421F /* ZipInflate.c in Sources */,
 				8236B497FA328F3998A039F3 /* VideoFrameInterpolator.swift in Sources */,
 				478EFC1654216BECBCF50FEE /* VideoProcessor.swift in Sources */,
 				73C637C4980350B6E3046533 /* BatchView.swift in Sources */,
@@ -478,7 +467,6 @@
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
 				SWIFT_EMBED_LIBRARIES_WITH_INSTALL = YES;
-				SWIFT_OBJC_BRIDGING_HEADER = SafeVision/SafeVision-Bridging-Header.h;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
 				DEBUG_INFORMATION_FORMAT = dwarf;
@@ -504,7 +492,6 @@
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
 				SWIFT_EMBED_LIBRARIES_WITH_INSTALL = YES;
-				SWIFT_OBJC_BRIDGING_HEADER = SafeVision/SafeVision-Bridging-Header.h;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
