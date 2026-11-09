@@ -323,15 +323,15 @@ struct SettingsView: View {
             }
             .sheet(isPresented: $showingOutlinePicker) {
                 LabelToggleSheet(
-                    titleKey: "action_outline_labels",
                     selected: $privacy.maskOutlineLabels,
+                    titleKey: "action_outline_labels",
                     labels: labels
                 )
             }
             .sheet(isPresented: $showingReversePicker) {
                 LabelToggleSheet(
-                    titleKey: "action_reverse_labels",
                     selected: $privacy.reverseLabels,
+                    titleKey: "action_reverse_labels",
                     labels: labels
                 )
             }
