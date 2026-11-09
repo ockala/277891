@@ -1,1 +1,130 @@
-placeholder
+/* Safe Vision — 简体中文 */
+
+/* Tabs */
+"tab_image" = "图片";
+"tab_video" = "视频";
+"tab_batch" = "批量";
+"tab_gallery" = "相册";
+"tab_settings" = "设置";
+
+/* Actions */
+"action_select_image" = "选择图片";
+"action_take_photo" = "拍照";
+"action_select_video" = "选择视频";
+"action_select_images" = "选择图片";
+"action_start_detection" = "开始检测";
+"action_apply_mask" = "应用打码";
+"action_save_to_photos" = "保存到相册";
+"action_save_to_app" = "保存到应用内";
+"action_start_processing" = "开始处理";
+"action_cancel" = "取消";
+"action_process_all" = "全部处理";
+"action_clear" = "清空";
+"action_share" = "分享";
+"action_delete" = "删除";
+"action_export_to_photos" = "导出到相册";
+"action_save_preset" = "保存预设";
+"action_apply_preset" = "应用";
+"action_reset_defaults" = "恢复默认设置";
+"action_done" = "完成";
+"action_close" = "关闭";
+"action_confirm" = "确认";
+
+/* Status */
+"status_select_image_hint" = "请选择一张图片进行检测";
+"status_image_ready" = "图片已就绪，可以开始检测。";
+"status_detecting" = "正在检测，请稍候…";
+"status_detection_done" = "检测到 %d 个目标";
+"status_no_detection" = "未检测到敏感内容";
+"status_mask_applied" = "打码已应用";
+"status_saved_to_photos" = "已保存到相册";
+"status_saved_to_app" = "已保存到应用内：%@";
+"status_save_failed" = "保存失败：%@";
+"status_model_missing" = "模型文件缺失，请重新安装应用";
+"status_model_load_failed" = "模型加载失败：%@";
+"status_detection_failed" = "检测失败：%@";
+"status_no_image_selected" = "请先选择图片";
+"status_select_video_hint" = "请选择一个视频进行处理";
+"status_video_ready" = "视频已就绪，可以开始处理。";
+"status_processing_video" = "正在处理视频，请稍候…";
+"status_video_done" = "视频处理完成";
+"status_video_failed" = "视频处理失败：%@";
+"status_video_cancelled" = "视频处理已取消";
+"status_batch_empty" = "尚未选择图片";
+"status_batch_empty_hint" = "点“选择图片”添加要批量处理的图片。";
+"status_batch_progress" = "已处理 %d/%d 张";
+"status_gallery_empty" = "没有已处理的媒体";
+"status_gallery_empty_hint" = "处理过的图片和视频会保存在这里。";
+
+/* Labels */
+"label_tap_box_hint" = "点按检测框可调整该标签的遮挡效果。";
+"label_selected_label" = "已选标签";
+"label_confidence" = "置信度";
+"label_enabled" = "启用遮挡";
+"label_effect" = "遮挡效果";
+"label_scale" = "放大倍率";
+"label_locked" = "锁定";
+"label_default_effect" = "默认遮挡效果";
+"label_mosaic_block_size" = "马赛克块大小";
+"label_gaussian_radius" = "高斯模糊半径";
+"label_video_stride" = "每 N 帧检测一次";
+"label_appearance" = "外观";
+"label_language" = "语言";
+"label_about" = "关于";
+"label_model" = "模型";
+"label_labels" = "标签设置";
+"label_mask_params" = "打码参数";
+"label_presets" = "预设";
+"label_video_section" = "视频";
+"label_version" = "版本";
+"label_about_text" = "本地检测，不上传任何图片或视频。所有处理均在设备上完成。";
+"label_language_restart_note" = "语言已切换，重启 App 后生效。";
+"label_duration" = "时长";
+"label_size" = "尺寸";
+"label_file_name" = "文件名";
+"label_video_info" = "视频信息";
+"label_progress_percent" = "进度：%d%%";
+"label_no_mask_boxes" = "暂无可打码的检测框";
+
+/* Batch status */
+"batch_status_pending" = "等待";
+"batch_status_processing" = "处理中";
+"batch_status_done" = "完成 %d 个目标";
+"batch_status_failed" = "失败：%@";
+
+/* Gallery */
+"gallery_delete_title" = "删除媒体";
+"gallery_delete_message" = "确定要删除 %@ 吗？";
+"gallery_export_success" = "导出成功，已保存到系统相册";
+"gallery_export_failed" = "导出失败：%@";
+
+/* Presets */
+"preset_name_prompt" = "请输入预设名称";
+"preset_name_placeholder" = "预设名称";
+"preset_saved" = "预设已保存：%@";
+"preset_applied" = "已切换预设：%@";
+"preset_deleted" = "已删除预设：%@";
+"preset_builtin" = "内置";
+"preset_current" = "当前预设";
+"preset_none" = "暂无已保存预设";
+
+/* Theme */
+"theme_system" = "跟随系统";
+"theme_light" = "浅色";
+"theme_dark" = "深色";
+
+/* Language */
+"language_system" = "跟随系统";
+"language_zh_hans" = "简体中文";
+"language_zh_hant" = "繁體中文";
+"language_en" = "English";
+"language_ko" = "한국어";
+
+/* Errors */
+"error_unknown" = "未知错误";
+"error_load_image_failed" = "加载图片失败：%@";
+"error_camera_unavailable" = "相机不可用";
+"error_photo_access_denied" = "相册写入权限未授予，请在系统设置中开启";
+
+/* Common */
+"common_notice" = "提示";
