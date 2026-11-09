@@ -214,8 +214,10 @@ struct ImageProcessingView: View {
 
     // MARK: - 模型加载（后台线程，失败只显示中文提示，不崩溃）
 
+    // 注意：不要用 `engine.isLoaded` 做 early-return——`DetectionEngine.load`
+    // 内部已有“同一 profile 不重复加载”的 no-op 保护；这里每次都调 load，
+    // 设置里切换模型（标准↔动漫）才能立即生效，否则会一直沿用第一次加载的模型。
     private func ensureModelLoaded() {
-        guard !engine.isLoaded else { return }
         let profile = appSettings.modelProfile
         DispatchQueue.global(qos: .userInitiated).async { [engine] in
             do {
@@ -241,9 +243,8 @@ struct ImageProcessingView: View {
         let profile = appSettings.modelProfile
         DispatchQueue.global(qos: .userInitiated).async { [engine] in
             do {
-                if !engine.isLoaded {
-                    try engine.load(profile: profile)
-                }
+                // 每次都调 load（同一 profile 时内部 no-op），切模型立即生效。
+                try engine.load(profile: profile)
                 let results = try engine.detect(uiImage: image)
                 DispatchQueue.main.async {
                     isDetecting = false
