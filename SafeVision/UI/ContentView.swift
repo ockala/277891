@@ -405,8 +405,12 @@ private struct BrowserWebView: UIViewRepresentable {
         }
 
         /// 把一个字符串转成 JSON 字符串字面量（安全拼进 JS 调用）。
+        /// 注意：不能用 JSONSerialization.data(withJSONObject:) 传 String——
+        /// 它要求顶层是 NSArray/NSDictionary，传 String 会抛 NSException
+        /// （"Invalid top-level type in JSON write"），Swift 的 try? 抓不住
+        /// Objective-C 异常，会直接闪退。JSONEncoder 可以正确编码顶层 String。
         private func jsString(_ value: String) -> String {
-            guard let data = try? JSONSerialization.data(withJSONObject: value),
+            guard let data = try? JSONEncoder().encode(value),
                   let json = String(data: data, encoding: .utf8) else {
                 return "\"\""
             }
