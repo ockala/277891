@@ -67,7 +67,7 @@ private final class BatchProcessingRunState {
 /// 对应 Android `BatchProcessingManager`（单线程顺序分支）：读
 /// UIImage → `DetectionEngine.detect(uiImage:)` → 按
 /// `PrivacySettingsManager.shared.maskedBoxes` 转成打码框 →
-/// `MaskRenderer.maskedImage` → `MediaSaveHelper.saveImageToAppFolder`
+/// `MaskRenderer.renderDetections` → `MediaSaveHelper.saveImageToAppFolder`
 /// 保存到 App 内输出目录（`Documents/SafeVision/`）。
 ///
 /// 无检测结果的图片也保存原图到输出目录并标记 `detectionCount = 0`；
@@ -223,18 +223,14 @@ public final class BatchProcessingManager: ObservableObject {
                 updateItem(id: item.id, token: token) { $0.status = .pending }
                 return false
             }
-            let outputImage: UIImage
-            if detections.isEmpty {
-                // 无检测结果：保存原图，detectionCount = 0。
-                outputImage = image
-            } else {
-                let boxes = PrivacySettingsManager.shared.maskedBoxes(for: detections)
-                guard let masked = MaskRenderer.maskedImage(image, boxes: boxes) else {
-                    // 打码失败不保存原图：避免敏感内容未经处理就落盘。
-                    throw BatchProcessingError.maskingFailed
-                }
-                outputImage = masked
+            // 走 `renderDetections`（不是低阶的 `maskedImage`），让批量
+            // 也应用反向遮挡与全屏回退。无检测结果且不需要全屏回退时
+            // 返回原图；需要全屏回退时整图打码。
+            guard let masked = MaskRenderer.renderDetections(image, detections: detections) else {
+                // 打码失败不保存原图：避免敏感内容未经处理就落盘。
+                throw BatchProcessingError.maskingFailed
             }
+            let outputImage = masked
             if runState.isCancelled {
                 updateItem(id: item.id, token: token) { $0.status = .pending }
                 return false
