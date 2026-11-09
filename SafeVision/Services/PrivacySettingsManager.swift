@@ -1,5 +1,4 @@
 import Combine
-import Compression
 import CoreGraphics
 import Foundation
 import UIKit
@@ -766,7 +765,8 @@ extension PrivacySettingsManager {
     /// 按 `order` 的顺序导入全部预设（同名覆盖；名为内置预设名
     /// "默认" 的跳过），贴纸解包到
     /// `ImportedStickers/<预设名>/<文件名>` 并改写引用。
-    /// 不自动应用导入的预设（与 Android 一致）。
+    /// 导入成功后自动应用第一个导入的预设（否则用户导入后看不到
+    /// 效果、会以为没导进去）。
     /// 贴纸文件按内容解码（不看扩展名，WebP 也可以）。
     public func importPresetPackage(zipData: Data) -> PresetImportResult {
         guard let archive = ZipArchive(data: zipData) else {
@@ -812,6 +812,12 @@ extension PrivacySettingsManager {
                 presets.append(preset)
             }
             result.imported.append(name)
+        }
+        // 导入成功后自动应用第一个导入的预设：否则设置页的值还是旧的，
+        // 用户会以为没导进去。
+        if let firstName = result.imported.first,
+           let preset = presets.first(where: { $0.name == firstName && !$0.isBuiltIn }) {
+            applyPreset(preset)
         }
         return result
     }
@@ -1109,87 +1115,24 @@ private struct ZipArchive {
 
     // MARK: - deflate 解压
 
-    /// 解压 raw deflate 数据。`Compression` 框架只提供 zlib 流接口，
-    /// 因此在数据前补 zlib 头（0x78 0x9C），末尾补 4 字节 0 作为
-    /// Adler32 占位；解码器会在 Adler32 校验处报错，但此时全部输出
-    /// 已产生——用 ZIP 中央目录给出的 `expectedSize` 校验输出长度，
-    /// 长度一致即认为解压成功。
+    /// 解压 raw deflate 数据。ZIP 的 method 8 是裸 deflate 流（无 zlib
+    /// 头、无 Adler32），`Compression` 框架只提供 zlib 流接口——之前用
+    /// “补 zlib 头 + 假 Adler32” 的 trick 赌解码器报错时输出还在，实测
+    /// 会丢掉全部输出（manifest.json 解不出来就报“预设包里没有
+    /// manifest.json”）。现在改走系统 libz（`ZipInflate.c`，
+    /// `inflateInit2(&strm, -15)`），真正的 raw-deflate 解压。
     private static func inflateRawDeflate(_ raw: Data, expectedSize: Int) -> Data? {
         if expectedSize == 0 { return Data() }
         guard expectedSize > 0, !raw.isEmpty else { return nil }
-        var input = Data([0x78, 0x9C])
-        input.append(raw)
-        input.append(Data([0, 0, 0, 0]))
-        // compression_stream 是 C 结构体，Swift 没有无参初始化器，
-        // 必须用完整字段初始化；dst_ptr/src_ptr 是非可选指针，不能传 nil，
-        // 先用两个 1 字节占位缓冲区初始化。compression_stream_init
-        // 之后、第一次 compression_stream_process 之前，两个指针都会被
-        // 重新指向真正的输入/输出缓冲区；占位数组在函数内不再修改，
-        // 存储地址保持稳定。
-        var placeholderDst = [UInt8](repeating: 0, count: 1)
-        var placeholderSrc = [UInt8](repeating: 0, count: 1)
-        var stream = placeholderDst.withUnsafeMutableBufferPointer { dstBuffer in
-            placeholderSrc.withUnsafeBufferPointer { srcBuffer in
-                compression_stream(
-                    dst_ptr: dstBuffer.baseAddress!,
-                    dst_size: 0,
-                    src_ptr: srcBuffer.baseAddress!,
-                    src_size: 0,
-                    state: nil
-                )
+        var outLength = 0
+        return raw.withUnsafeBytes { inputBuffer -> Data? in
+            guard let base = inputBuffer.baseAddress?.assumingMemoryBound(to: UInt8.self),
+                  let outPtr = SVZipInflateRawDeflate(base, raw.count, expectedSize, &outLength) else {
+                return nil
             }
+            defer { free(outPtr) }
+            guard outLength == expectedSize else { return nil }
+            return Data(bytes: outPtr, count: outLength)
         }
-        guard compression_stream_init(&stream, COMPRESSION_STREAM_DECODE, COMPRESSION_ZLIB) == COMPRESSION_STATUS_OK else {
-            return nil
-        }
-        defer { compression_stream_destroy(&stream) }
-        var output = Data()
-        output.reserveCapacity(expectedSize)
-        let chunkSize = 65536
-        var chunk = [UInt8](repeating: 0, count: chunkSize)
-        var status: compression_status = COMPRESSION_STATUS_OK
-        input.withUnsafeBytes { inputBuffer in
-            guard let inputBase = inputBuffer.baseAddress?.assumingMemoryBound(to: UInt8.self) else { return }
-            stream.src_ptr = inputBase
-            stream.src_size = input.count
-            while stream.src_size > 0 {
-                let srcSizeBefore = stream.src_size
-                let produced = chunk.withUnsafeMutableBytes { chunkBuffer -> Int in
-                    guard let chunkBase = chunkBuffer.baseAddress?.assumingMemoryBound(to: UInt8.self) else { return 0 }
-                    stream.dst_ptr = chunkBase
-                    stream.dst_size = chunkSize
-                    // Compression 框架没有 compression_stream_decode，
-                    // 解码是 init 时定方向（COMPRESSION_STREAM_DECODE），
-                    // 推进用 compression_stream_process。
-                    status = compression_stream_process(&stream, 0)
-                    return chunkSize - stream.dst_size
-                }
-                if produced > 0 {
-                    output.append(contentsOf: chunk[0..<produced])
-                }
-                if status == COMPRESSION_STATUS_END || status == COMPRESSION_STATUS_ERROR {
-                    break
-                }
-                // 无进展（既没消耗输入也没产出输出）时退出，避免死循环。
-                if produced == 0 && stream.src_size == srcSizeBefore {
-                    break
-                }
-            }
-            // 输入已耗尽但输出未达预期时，再调用一次冲出残留输出。
-            if output.count < expectedSize && status == COMPRESSION_STATUS_OK {
-                let produced = chunk.withUnsafeMutableBytes { chunkBuffer -> Int in
-                    guard let chunkBase = chunkBuffer.baseAddress?.assumingMemoryBound(to: UInt8.self) else { return 0 }
-                    stream.dst_ptr = chunkBase
-                    stream.dst_size = chunkSize
-                    status = compression_stream_process(&stream, 0)
-                    return chunkSize - stream.dst_size
-                }
-                if produced > 0 {
-                    output.append(contentsOf: chunk[0..<produced])
-                }
-            }
-        }
-        guard output.count == expectedSize else { return nil }
-        return output
     }
 }
