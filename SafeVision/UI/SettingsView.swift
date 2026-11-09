@@ -318,13 +318,19 @@ struct SettingsView: View {
             .navigationTitle(localizedKey("tab_settings"))
             .fileImporter(
                 isPresented: $showingPresetImporter,
-                allowedContentTypes: [UTType.zip],
+                // 预设文件名是 preset_xxx.svpreset.zip（双后缀），有些文件提供者
+                // （如“小米互联”）对它的类型判定不认 UTType.zip，文件会灰掉点不了。
+                // 放宽到 UTType.data 让文件总能被选中；导入代码本身会校验是不是
+                // 合法预设包，非法文件会弹错，不会把坏文件导进去。
+                allowedContentTypes: [UTType.zip, UTType.data],
                 allowsMultipleSelection: false
             ) { result in
                 switch result {
                 case .success(let urls):
                     if let url = urls.first {
                         importPreset(from: url)
+                    } else {
+                        noticeMessage = localized("preset_import_none")
                     }
                 case .failure(let error):
                     noticeMessage = localizedFormat("preset_import_failed",
