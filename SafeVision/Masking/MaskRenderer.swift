@@ -6,10 +6,11 @@ import UIKit
 /// 坐标约定：所有框均为原图像素坐标，左上角原点、y 向下，与
 /// `Detection.box` 一致。
 ///
-/// 方向：合成统一用 `UIGraphicsImageRenderer`（UIKit 保证输出方向
-/// 为 `.up`）。旧实现用裸 `CGContext` + 手动翻转 + `makeImage()`，
-/// 实测输出整图上下颠倒（图片与视频两条管线都翻），因此改走
-/// UIKit 渲染路径；`extractPixels`（只读像素取样）仍用裸上下文。
+/// 方向：合成用 `UIGraphicsImageRenderer`，但画 CGImage 时一律走
+/// `UIImage(cgImage:orientation:.up).draw(in:)`——直接用
+/// `CGContext.draw(cgImage, in:)` 在渲染器上下文里会上下颠倒
+///（build #54 真机实测），`UIImage.draw` 按 orientation 保证正像。
+/// `extractPixels`（只读像素取样）仍用裸上下文 + 手动翻转。
 ///
 /// 效果与 Android `DetectionRenderEngine` / `BlurEffects` 对齐：
 /// 马赛克块大小取当前设置的 `mosaicBlockSize`（预设值，如 ZISUE
@@ -46,7 +47,11 @@ public enum MaskRenderer {
         let result = renderer.image { rendererContext in
             let context = rendererContext.cgContext
             context.interpolationQuality = .high
-            context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+            // 注意：这里不能用 context.draw(cgImage, in:)——在渲染器
+            // 上下文里直接画 CGImage 会上下颠倒（build #54 真机实测）；
+            // UIImage.draw(in:) 按 orientation 保证正像。
+            UIImage(cgImage: image, scale: 1, orientation: .up)
+                .draw(in: CGRect(x: 0, y: 0, width: width, height: height))
             let bounds = CGRect(x: 0, y: 0, width: width, height: height)
             for maskedBox in boxes {
                 let rect = scaledClampedRect(maskedBox, in: bounds)
@@ -204,7 +209,9 @@ public enum MaskRenderer {
                 if let stickerImage = sticker ?? StickerLoader.defaultSticker() {
                     // 先铺原图再盖贴纸，半透明贴纸才能正确叠加
                     //（与 Android `applyReverseMask` 一致）。
-                    context.draw(image, in: bounds)
+                    // 同 maskedCGImage：画 CGImage 一律用 UIImage.draw，
+                    // context.draw 会上下颠倒。
+                    UIImage(cgImage: image, scale: 1, orientation: .up).draw(in: bounds)
                     drawSticker(in: context, source: image, rect: bounds, stickerOverride: stickerImage)
                 } else {
                     let fullBox = MaskedBox(box: bounds, effect: .mosaic)
@@ -221,10 +228,10 @@ public enum MaskRenderer {
                     context.saveGState()
                     context.addEllipse(in: circle)
                     context.clip()
-                    context.draw(restore, in: bounds)
+                    UIImage(cgImage: restore, scale: 1, orientation: .up).draw(in: bounds)
                     context.restoreGState()
                 } else {
-                    context.draw(restore, in: rect)
+                    UIImage(cgImage: restore, scale: 1, orientation: .up).draw(in: rect)
                 }
             }
             // 3. 反向区域的描边。
@@ -406,8 +413,9 @@ public enum MaskRenderer {
 
     /// 块大小取当前设置的 `mosaicBlockSize`（预设值，例如 ZISUE 的 19），
     /// 与 Android `drawMosaic(canvas, source, rect, getMosaicBlockSize())`
-    /// 一致；旧实现按框尺寸算 `min(宽,高)/12` 且忽略设置，导致块大小
-    /// 不对（小框上只有两三块、看起来像纯色块）。
+    /// 一致；但预设值是绝对像素，小框（如 60×80px）上 19px 一格只能排
+    /// 三四块、看起来像大色块，所以每个框单独算：保证框短边方向至少
+    /// 8 格，小框自动用更细的格子，大框仍用预设值。
     /// 每块取左上角像素颜色填充整块（与 Android
     /// `BlurEffects.createMosaicBitmap` 的取样方式一致），块大、格子清楚，
     /// 与预设视频里的效果一致。
@@ -415,7 +423,11 @@ public enum MaskRenderer {
         let pixelRect = integralRect(rect, width: source.width, height: source.height)
         guard pixelRect.width >= 1, pixelRect.height >= 1,
               let buffer = extractPixels(from: source, rect: pixelRect) else { return }
-        let blockSize = max(1, PrivacySettingsManager.shared.mosaicBlockSize)
+        let presetBlockSize = max(1, PrivacySettingsManager.shared.mosaicBlockSize)
+        let blockSize = min(
+            presetBlockSize,
+            max(2, Int(min(pixelRect.width, pixelRect.height)) / 8)
+        )
         for blockY in stride(from: 0, to: buffer.height, by: blockSize) {
             for blockX in stride(from: 0, to: buffer.width, by: blockSize) {
                 let offset = (blockY * buffer.width + blockX) * 4
@@ -456,7 +468,9 @@ public enum MaskRenderer {
         let output = filter.outputImage else { return }
         let extent = CGRect(x: 0, y: 0, width: pixelRect.width, height: pixelRect.height)
         guard let blurred = ciContext.createCGImage(output, from: extent) else { return }
-        context.draw(blurred, in: pixelRect)
+        // 同 maskedCGImage：画 CGImage 一律用 UIImage.draw，
+        // context.draw 会上下颠倒（与底图错位）。
+        UIImage(cgImage: blurred, scale: 1, orientation: .up).draw(in: pixelRect)
     }
 
     // MARK: - 素描（Sobel）
@@ -516,7 +530,9 @@ public enum MaskRenderer {
             output[offset + 3] = 255
         }
         guard let sketchImage = cgImage(from: output, width: width, height: height) else { return }
-        context.draw(sketchImage, in: pixelRect)
+        // 同 maskedCGImage：画 CGImage 一律用 UIImage.draw，
+        // context.draw 会上下颠倒（与底图错位）。
+        UIImage(cgImage: sketchImage, scale: 1, orientation: .up).draw(in: pixelRect)
     }
 
     // MARK: - 贴纸
@@ -549,7 +565,9 @@ public enum MaskRenderer {
             width: destWidth,
             height: destHeight
         )
-        context.draw(stickerImage, in: destRect)
+        // 同 maskedCGImage：画 CGImage 一律用 UIImage.draw，
+        // context.draw 会上下颠倒（与底图错位）。
+        UIImage(cgImage: stickerImage, scale: 1, orientation: .up).draw(in: destRect)
     }
 
     // MARK: - 方向归正
