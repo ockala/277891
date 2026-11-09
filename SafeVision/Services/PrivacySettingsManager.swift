@@ -1121,9 +1121,24 @@ private struct ZipArchive {
         input.append(raw)
         input.append(Data([0, 0, 0, 0]))
         // compression_stream 是 C 结构体，Swift 没有无参初始化器，
-        // 必须用完整字段初始化（各指针置 nil、大小置 0），再由
-        // compression_stream_init 填 state。
-        var stream = compression_stream(dst_ptr: nil, dst_size: 0, src_ptr: nil, src_size: 0, state: nil)
+        // 必须用完整字段初始化；dst_ptr/src_ptr 是非可选指针，不能传 nil，
+        // 先用两个 1 字节占位缓冲区初始化。compression_stream_init
+        // 之后、第一次 compression_stream_process 之前，两个指针都会被
+        // 重新指向真正的输入/输出缓冲区；占位数组在函数内不再修改，
+        // 存储地址保持稳定。
+        var placeholderDst = [UInt8](repeating: 0, count: 1)
+        var placeholderSrc = [UInt8](repeating: 0, count: 1)
+        var stream = placeholderDst.withUnsafeMutableBufferPointer { dstBuffer in
+            placeholderSrc.withUnsafeBufferPointer { srcBuffer in
+                compression_stream(
+                    dst_ptr: dstBuffer.baseAddress!,
+                    dst_size: 0,
+                    src_ptr: srcBuffer.baseAddress!,
+                    src_size: 0,
+                    state: nil
+                )
+            }
+        }
         guard compression_stream_init(&stream, COMPRESSION_STREAM_DECODE, COMPRESSION_ZLIB) == COMPRESSION_STATUS_OK else {
             return nil
         }
