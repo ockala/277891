@@ -137,6 +137,8 @@
 "browser_masked_count" = "已打码 %d 张图片";
 "browser_loading" = "加载中…";
 "browser_hint" = "输入网址开始浏览";
+"browser_load_failed" = "加载失败：%@";
+"browser_invalid_url" = "网址无效";
 
 /* Preset import */
 "action_import_preset" = "导入预设";
