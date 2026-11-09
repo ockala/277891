@@ -547,12 +547,32 @@ public final class VideoProcessor: ObservableObject {
             if runState.isCancelled { throw VideoProcessingError.cancelled }
             let detectionFrame = frames[frames.count / 2]
             var currentDetections: [Detection] = []
-            if let detectionImage = cgImage(from: detectionFrame.pixelBuffer) {
+            if let rawDetectionImage = cgImage(from: detectionFrame.pixelBuffer) {
                 if !didDetect {
                     didDetect = true
                     publishOnMain { self.statusMessage = "正在检测…" }
                 }
-                currentDetections = try engine.detect(cgImage: detectionImage)
+                // 方向归正：解码帧是编码方向（如 iPhone 竖屏视频的帧是
+                // 横屏 1920x1080），模型在横过来的帧上检人会丢分；
+                // 按 preferredTransform 转正再检，框再逆映射回编码坐标，
+                // 与后续在原帧上打码的坐标系一致。
+                let transform = videoTrack.preferredTransform
+                let orientedImage = orientedCGImage(rawDetectionImage, transform: transform)
+                let detectionImage = orientedImage ?? rawDetectionImage
+                var detections = try engine.detect(cgImage: detectionImage)
+                if transform != .identity, orientedImage != nil {
+                    let inverse = orientationForwardTransform(
+                        for: rawDetectionImage, transform: transform
+                    ).inverted()
+                    detections = detections.map { detection in
+                        Detection(
+                            label: detection.label,
+                            score: detection.score,
+                            box: detection.box.applying(inverse)
+                        )
+                    }
+                }
+                currentDetections = detections
             } else if let previous = previousDetection {
                 // 检测帧取不到像素：沿用上一次检测结果，不中断整段。
                 currentDetections = previous.boxes
@@ -706,6 +726,49 @@ public final class VideoProcessor: ObservableObject {
         let status = VTCreateCGImageFromCVPixelBuffer(pixelBuffer, options: nil, imageOut: &image)
         guard status == noErr else { return nil }
         return image
+    }
+
+    /// 按视频轨的 preferredTransform 把一帧转正（显示方向），供检测用。
+    ///
+    /// 解码帧是编码方向（如 iPhone 竖屏视频的编码帧是横屏），模型在横过来的
+    /// 帧上检人会丢分。preferredTransform 是 y-down（UIKit 方向）坐标系下
+    /// 的变换：上下文先翻转为 y-down，再拼正变换画图，转出的图即显示方向。
+    /// transform 为 identity 时直接返回原图；上下文创建失败返回 nil。
+    private func orientedCGImage(_ image: CGImage, transform: CGAffineTransform) -> CGImage? {
+        guard transform != .identity else { return image }
+        let srcRect = CGRect(x: 0, y: 0, width: image.width, height: image.height)
+        let dstRect = srcRect.applying(transform)
+        let dstWidth = Int(dstRect.width.rounded())
+        let dstHeight = Int(dstRect.height.rounded())
+        guard dstWidth > 0, dstHeight > 0 else { return nil }
+        guard let context = CGContext(
+            data: nil,
+            width: dstWidth,
+            height: dstHeight,
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue
+        ) else { return nil }
+        // CGContext 默认 y-up；翻转为 y-down 后 preferredTransform 可直接用。
+        context.translateBy(x: 0, y: CGFloat(dstHeight))
+        context.scaleBy(x: 1, y: -1)
+        context.concatenate(orientationForwardTransform(for: image, transform: transform))
+        context.draw(image, in: srcRect)
+        return context.makeImage()
+    }
+
+    /// orientedCGImage 用的正变换：编码坐标 → 显示坐标。
+    /// preferredTransform 本身已把显示矩形移到原点（平移量恒为 0），
+    /// 这里的平移只是兜底；与 orientedCGImage 里的拼接顺序一致
+    /// （点 p → 平移(transform(p))，即先 transform、后平移），
+    /// 逆变换 `inverted()` 即显示坐标 → 编码坐标，供检测框逆映射用。
+    private func orientationForwardTransform(for image: CGImage, transform: CGAffineTransform) -> CGAffineTransform {
+        let srcRect = CGRect(x: 0, y: 0, width: image.width, height: image.height)
+        let dstRect = srcRect.applying(transform)
+        return transform.concatenating(
+            CGAffineTransform(translationX: -dstRect.origin.x, y: -dstRect.origin.y)
+        )
     }
 
     /// 把打码后的 CGImage 画进编码器的像素缓冲池（BGRA，与 adaptor 一致；
