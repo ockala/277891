@@ -411,6 +411,12 @@ public final class VideoProcessor: ObservableObject {
         // 有效采样时当作“空音轨”，只出视频、不报错。
         // 跳过最多 16 个空采样；第一个非空采样存进 pendingAudioSample，
         // 后续 drainAudio 会先写它（不丢弃）。
+        // 会话开始时间：所有采样 PTS 必须 ≥ 此值。iPhone .mov 首个
+        // 音频采样常为负 PTS（AAC priming 约 2112 采样 + edit list
+        // 偏移），AVAssetWriter 收到早于会话开始时间的采样时 append
+        // 返回 false 且 writer 转入 .failed，第一个坏采样毒死整个
+        // writer——所以负 PTS 采样必须在探采样和 drainAudio 两处都跳过。
+        let sessionStartTime = CMTime.zero
         var pendingAudioSample: CMSampleBuffer?
         if let output = audioOutput, let input = audioInput {
             var firstSample: CMSampleBuffer?
@@ -422,11 +428,27 @@ public final class VideoProcessor: ObservableObject {
                     emptySkipped += 1
                     continue
                 }
+                // 负 PTS 采样：早于会话开始时间，append 会失败并毒死
+                // writer；跳过（计入跳过预算），继续读下一个。
+                let pts = CMSampleBufferGetPresentationTimeStamp(sample)
+                if CMTimeCompare(pts, sessionStartTime) < 0 {
+                    NSLog("[VideoProcessor] 探采样跳过负 PTS 音频采样（pts=%.3fs）", pts.seconds)
+                    emptySkipped += 1
+                    continue
+                }
                 firstSample = sample
                 break
             }
             if let firstSample {
                 pendingAudioSample = firstSample
+                let firstPTS = CMSampleBufferGetPresentationTimeStamp(firstSample)
+                let firstNumSamples = CMSampleBufferGetNumSamples(firstSample)
+                var formatInfo = ""
+                if let formatDesc = CMSampleBufferGetFormatDescription(firstSample),
+                   let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(formatDesc) {
+                    formatInfo = "，采样率 \(Int(asbd.pointee.mSampleRate))Hz，声道 \(asbd.pointee.mChannelsPerFrame)"
+                }
+                NSLog("[VideoProcessor] 探采样成功：首个采样 pts=%.3fs，numSamples=%d%@", firstPTS.seconds, firstNumSamples, formatInfo)
                 guard writer.canAdd(input) else {
                     throw VideoProcessingError.audioFailed("音频输入无法接入")
                 }
@@ -478,6 +500,13 @@ public final class VideoProcessor: ObservableObject {
             return true
         }
 
+        /// writer.error 的可读描述（含 NSError domain + code，方便对应
+        /// 具体的 AVError 码；只给 localizedDescription 对不上码）。
+        func writerErrorDescription() -> String {
+            guard let error = writer.error as NSError? else { return "无" }
+            return "\(error.localizedDescription)（domain=\(error.domain)，code=\(error.code)）"
+        }
+
         /// 把音频样本写到不超过 maxPTS 为止；drainAll 时写完剩余全部样本。
         /// 超出 maxPTS 的第一个样本暂存到 pendingAudioSample，下次再写，
         /// 保证音画按 PTS 交错、不丢样。
@@ -494,6 +523,12 @@ public final class VideoProcessor: ObservableObject {
                     return
                 }
                 let pts = CMSampleBufferGetPresentationTimeStamp(sample)
+                // 负 PTS 采样：早于会话开始时间，append 会失败并毒死
+                // writer；跳过、不 append、不计为失败、不记失败原因。
+                if CMTimeCompare(pts, sessionStartTime) < 0 {
+                    NSLog("[VideoProcessor] drainAudio 跳过负 PTS 音频采样（pts=%.3fs）", pts.seconds)
+                    continue
+                }
                 if !drainAll, let maxPTS, CMTimeCompare(pts, maxPTS) > 0 {
                     pendingAudioSample = sample
                     return
@@ -501,7 +536,7 @@ public final class VideoProcessor: ObservableObject {
                 guard waitUntilReady(audioInput) else {
                     // 超时（非取消）：记下原因，供报错与重试诊断用。
                     if !runState.isCancelled, audioFailureReason == nil {
-                        audioFailureReason = "等待音频输入就绪超时（writer.status=\(writer.status)，writer.error=\(writer.error?.localizedDescription ?? "无")，reader.error=\(reader.error?.localizedDescription ?? "无")）"
+                        audioFailureReason = "等待音频输入就绪超时（writer.status=\(writer.status)，writer.error=\(writerErrorDescription())，reader.error=\(reader.error?.localizedDescription ?? "无")）"
                     }
                     return
                 }
@@ -510,8 +545,9 @@ public final class VideoProcessor: ObservableObject {
                     audioAppendFailures = 0
                 } else {
                     audioAppendFailures += 1
+                    NSLog("[VideoProcessor] 音频采样 append 失败（pts=%.3fs）", pts.seconds)
                     if audioFailureReason == nil {
-                        audioFailureReason = "音频采样 append 失败（writer.status=\(writer.status)，writer.error=\(writer.error?.localizedDescription ?? "无")，reader.error=\(reader.error?.localizedDescription ?? "无")）"
+                        audioFailureReason = "音频采样 append 失败（writer.status=\(writer.status)，writer.error=\(writerErrorDescription())，reader.error=\(reader.error?.localizedDescription ?? "无")）"
                     }
                     // 直传系统性失败：首个采样就失败，或连续失败达到阈值。
                     // 标记后帧循环抛 AudioPassthroughFailure，
@@ -616,6 +652,7 @@ public final class VideoProcessor: ObservableObject {
                         width: outWidth,
                         height: outHeight
                     ) else {
+                        NSLog("[VideoProcessor] renderToPixelBuffer 返回 nil，跳过第 %d 帧（writer.status=%@）", frame.index, "\(writer.status)")
                         return true
                     }
                     guard waitUntilReady(videoInput) else { return false }
