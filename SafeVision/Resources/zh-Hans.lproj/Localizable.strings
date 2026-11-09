@@ -128,3 +128,47 @@
 
 /* Common */
 "common_notice" = "提示";
+
+/* Browser */
+"tab_browser" = "浏览器";
+"browser_url_placeholder" = "输入网址";
+"browser_go" = "前往";
+"browser_filter" = "内容过滤";
+"browser_masked_count" = "已打码 %d 张图片";
+"browser_loading" = "加载中…";
+"browser_hint" = "输入网址开始浏览";
+
+/* Preset import */
+"action_import_preset" = "导入预设";
+"preset_imported" = "已导入预设：%@";
+"preset_imported_skipped" = "已导入 %@，跳过 %@";
+"preset_import_none" = "没有可导入的预设";
+"preset_import_failed" = "导入失败：%@";
+"preset_import_failed_read" = "无法读取该文件";
+"preset.import.invalidZip" = "无效的预设包";
+"preset.import.noManifest" = "预设包里没有 manifest.json";
+"preset.import.invalidManifest" = "manifest.json 解析失败";
+"preset.import.wrongType" = "不是 Safe Vision 预设包";
+
+/* Sticker */
+"label_sticker" = "贴纸";
+"label_current_sticker" = "当前贴纸";
+"action_pick_custom_sticker" = "选择自定义贴纸";
+"action_use_default_sticker" = "使用默认贴纸";
+
+/* Outline */
+"label_outline" = "遮挡红边";
+"label_outline_enabled" = "遮挡红边";
+"action_outline_labels" = "部位调整";
+
+/* Reverse masking */
+"label_reverse" = "反向遮挡";
+"action_reverse_labels" = "选择反向标签";
+"label_reverse_pre_render" = "反向优先渲染";
+"label_reverse_miss_fullscreen" = "未命中反向标签时全屏遮挡";
+"label_empty_fullscreen" = "无任何内容时全屏遮挡";
+"label_reverse_none" = "未设置反向标签";
+
+/* Mask params (additional) */
+"label_mask_scale" = "遮挡放大倍率";
+"label_circular_mask" = "圆形遮挡";
