@@ -128,3 +128,47 @@
 
 /* Common */
 "common_notice" = "Notice";
+
+/* Browser */
+"tab_browser" = "Browser";
+"browser_url_placeholder" = "Enter URL";
+"browser_go" = "Go";
+"browser_filter" = "Content Filter";
+"browser_masked_count" = "Masked %d images";
+"browser_loading" = "Loading…";
+"browser_hint" = "Enter a URL to start browsing";
+
+/* Preset import */
+"action_import_preset" = "Import Preset";
+"preset_imported" = "Imported preset: %@";
+"preset_imported_skipped" = "Imported %@, skipped %@";
+"preset_import_none" = "No presets to import";
+"preset_import_failed" = "Import failed: %@";
+"preset_import_failed_read" = "Could not read the file";
+"preset.import.invalidZip" = "Invalid preset package";
+"preset.import.noManifest" = "No manifest.json in the preset package";
+"preset.import.invalidManifest" = "Failed to parse manifest.json";
+"preset.import.wrongType" = "Not a Safe Vision preset package";
+
+/* Sticker */
+"label_sticker" = "Sticker";
+"label_current_sticker" = "Current Sticker";
+"action_pick_custom_sticker" = "Choose Custom Sticker";
+"action_use_default_sticker" = "Use Default Sticker";
+
+/* Outline */
+"label_outline" = "Mask Outline";
+"label_outline_enabled" = "Mask Outline";
+"action_outline_labels" = "Choose Parts";
+
+/* Reverse masking */
+"label_reverse" = "Reverse Masking";
+"action_reverse_labels" = "Choose Reverse Labels";
+"label_reverse_pre_render" = "Reverse Pre-render";
+"label_reverse_miss_fullscreen" = "Fullscreen When No Reverse Label Hit";
+"label_empty_fullscreen" = "Fullscreen When Nothing Detected";
+"label_reverse_none" = "No reverse labels set";
+
+/* Mask params (additional) */
+"label_mask_scale" = "Mask Scale";
+"label_circular_mask" = "Circular Mask";
