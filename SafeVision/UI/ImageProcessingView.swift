@@ -1,0 +1,458 @@
+import PhotosUI
+import SwiftUI
+import UIKit
+
+/// 图片处理页：选图 / 拍照 -> 检测 -> 点选检测框改效果 -> 应用打码 -> 保存。
+struct ImageProcessingView: View {
+    @EnvironmentObject private var privacy: PrivacySettingsManager
+    @EnvironmentObject private var appSettings: AppSettingsManager
+    @StateObject private var engine = DetectionEngine()
+
+    @State private var photoItem: PhotosPickerItem?
+    @State private var selectedImage: UIImage?
+    @State private var detections: [Detection] = []
+    @State private var maskedImage: UIImage?
+    @State private var selectedDetection: Detection?
+    @State private var isDetecting = false
+    @State private var isMasking = false
+    @State private var isSaving = false
+    @State private var statusMessage = ""
+    @State private var errorMessage: String?
+    @State private var showingCamera = false
+
+    private var displayedImage: UIImage? { maskedImage ?? selectedImage }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    // MARK: - 选择图片
+                    HStack(spacing: 12) {
+                        PhotosPicker(selection: $photoItem, matching: .images) {
+                            Label(localizedKey("action_select_image"), systemImage: "photo.on.rectangle")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        Button {
+                            if UIImagePickerController.isSourceTypeAvailable(.camera) {
+                                showingCamera = true
+                            } else {
+                                errorMessage = localized("error_camera_unavailable")
+                            }
+                        } label: {
+                            Label(localizedKey("action_take_photo"), systemImage: "camera")
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                    .onChange(of: photoItem) { _, newValue in
+                        Task { await loadPhotoItem(newValue) }
+                    }
+
+                    // MARK: - 图片 + 检测框
+                    if let image = selectedImage {
+                        GeometryReader { geometry in
+                            ZStack {
+                                Image(uiImage: image)
+                                    .resizable()
+                                    .scaledToFit()
+                                    .frame(width: geometry.size.width,
+                                           height: geometry.size.height)
+                                DetectionOverlayView(
+                                    imageSize: image.size,
+                                    displaySize: geometry.size,
+                                    detections: detections,
+                                    selectedID: selectedDetection?.id,
+                                    onSelect: { selectedDetection = $0 }
+                                )
+                            }
+                        }
+                        .frame(height: 360)
+                        .background(Color.black.opacity(0.05))
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+
+                        if !detections.isEmpty {
+                            Text(localizedKey("label_tap_box_hint"))
+                                .font(.footnote)
+                                .foregroundColor(.secondary)
+                        }
+
+                        // MARK: - 检测 / 打码
+                        HStack(spacing: 12) {
+                            Button {
+                                startDetection()
+                            } label: {
+                                if isDetecting {
+                                    ProgressView()
+                                } else {
+                                    Label(localizedKey("action_start_detection"),
+                                          systemImage: "viewfinder")
+                                }
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(isDetecting || isMasking)
+
+                            Button {
+                                applyMask()
+                            } label: {
+                                if isMasking {
+                                    ProgressView()
+                                } else {
+                                    Label(localizedKey("action_apply_mask"),
+                                          systemImage: "eye.slash")
+                                }
+                            }
+                            .buttonStyle(.bordered)
+                            .disabled(isDetecting || isMasking || detections.isEmpty)
+                        }
+
+                        // MARK: - 打码结果
+                        if let masked = maskedImage {
+                            Text(localizedKey("status_mask_applied"))
+                                .font(.headline)
+                            Image(uiImage: masked)
+                                .resizable()
+                                .scaledToFit()
+                                .frame(maxHeight: 360)
+                                .clipShape(RoundedRectangle(cornerRadius: 12))
+                        }
+
+                        // MARK: - 保存
+                        HStack(spacing: 12) {
+                            Button {
+                                saveToPhotos()
+                            } label: {
+                                Label(localizedKey("action_save_to_photos"),
+                                      systemImage: "square.and.arrow.down")
+                            }
+                            .buttonStyle(.bordered)
+                            .disabled(isSaving || displayedImage == nil)
+
+                            Button {
+                                saveToAppFolder()
+                            } label: {
+                                Label(localizedKey("action_save_to_app"),
+                                      systemImage: "folder")
+                            }
+                            .buttonStyle(.bordered)
+                            .disabled(isSaving || displayedImage == nil)
+                        }
+                    } else {
+                        ContentUnavailableView(
+                            localizedKey("status_select_image_hint"),
+                            systemImage: "photo",
+                            description: Text(localizedKey("status_image_ready"))
+                        )
+                        .frame(height: 280)
+                    }
+
+                    // MARK: - 状态 / 错误
+                    if !statusMessage.isEmpty {
+                        Text(statusMessage)
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                    }
+                    if let errorMessage {
+                        Text(errorMessage)
+                            .font(.subheadline)
+                            .foregroundColor(.red)
+                    }
+                }
+                .padding()
+            }
+            .navigationTitle(localizedKey("tab_image"))
+            .sheet(item: $selectedDetection) { detection in
+                DetectionEffectSheet(detection: detection)
+                    .environmentObject(privacy)
+            }
+            .sheet(isPresented: $showingCamera) {
+                CameraPickerView(image: $selectedImage, onPicked: resetResults)
+            }
+            .task {
+                ensureModelLoaded()
+            }
+            .onChange(of: appSettings.modelProfile) { _, _ in
+                detections = []
+                maskedImage = nil
+                ensureModelLoaded()
+            }
+        }
+    }
+
+    // MARK: - 选图
+
+    private func loadPhotoItem(_ item: PhotosPickerItem?) async {
+        guard let item else { return }
+        do {
+            guard let data = try await item.loadTransferable(type: Data.self),
+                  let image = UIImage(data: data) else {
+                await MainActor.run {
+                    errorMessage = localizedFormat("error_load_image_failed",
+                                                   localized("error_unknown"))
+                }
+                return
+            }
+            await MainActor.run {
+                selectedImage = image
+                resetResults()
+                statusMessage = localized("status_image_ready")
+                errorMessage = nil
+            }
+        } catch {
+            await MainActor.run {
+                errorMessage = localizedFormat("error_load_image_failed",
+                                               error.localizedDescription)
+            }
+        }
+    }
+
+    private func resetResults() {
+        detections = []
+        maskedImage = nil
+        selectedDetection = nil
+        statusMessage = ""
+        errorMessage = nil
+    }
+
+    // MARK: - 模型加载（后台线程，失败只显示中文提示，不崩溃）
+
+    private func ensureModelLoaded() {
+        guard !engine.isLoaded else { return }
+        let profile = appSettings.modelProfile
+        DispatchQueue.global(qos: .userInitiated).async { [engine] in
+            do {
+                try engine.load(profile: profile)
+            } catch {
+                DispatchQueue.main.async {
+                    errorMessage = message(for: error)
+                }
+            }
+        }
+    }
+
+    // MARK: - 检测（后台线程）
+
+    private func startDetection() {
+        guard let image = selectedImage else {
+            errorMessage = localized("status_no_image_selected")
+            return
+        }
+        errorMessage = nil
+        statusMessage = localized("status_detecting")
+        isDetecting = true
+        let profile = appSettings.modelProfile
+        DispatchQueue.global(qos: .userInitiated).async { [engine] in
+            do {
+                if !engine.isLoaded {
+                    try engine.load(profile: profile)
+                }
+                let results = try engine.detect(uiImage: image)
+                DispatchQueue.main.async {
+                    isDetecting = false
+                    detections = results
+                    maskedImage = nil
+                    selectedDetection = nil
+                    if results.isEmpty {
+                        statusMessage = localized("status_no_detection")
+                    } else {
+                        statusMessage = localizedFormat("status_detection_done",
+                                                        results.count)
+                    }
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    isDetecting = false
+                    errorMessage = message(for: error)
+                    statusMessage = ""
+                }
+            }
+        }
+    }
+
+    // MARK: - 打码（后台线程）
+
+    private func applyMask() {
+        guard let image = selectedImage, !detections.isEmpty else { return }
+        errorMessage = nil
+        isMasking = true
+        let boxes = privacy.maskedBoxes(for: detections)
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = MaskRenderer.maskedImage(image, boxes: boxes)
+            DispatchQueue.main.async {
+                isMasking = false
+                if let result {
+                    maskedImage = result
+                    statusMessage = localized("status_mask_applied")
+                } else if boxes.isEmpty {
+                    statusMessage = localized("label_no_mask_boxes")
+                } else {
+                    errorMessage = localized("error_unknown")
+                }
+            }
+        }
+    }
+
+    // MARK: - 保存
+
+    private func saveToPhotos() {
+        guard let image = displayedImage else { return }
+        isSaving = true
+        requestPhotoLibraryAddAccess { granted in
+            DispatchQueue.main.async {
+                guard granted else {
+                    isSaving = false
+                    errorMessage = localizedFormat(
+                        "status_save_failed", localized("error_photo_access_denied"))
+                    return
+                }
+                MediaSaveHelper.saveImageToPhotos(image) { success, error in
+                    DispatchQueue.main.async {
+                        isSaving = false
+                        if success {
+                            statusMessage = localized("status_saved_to_photos")
+                            errorMessage = nil
+                        } else {
+                            errorMessage = localizedFormat(
+                                "status_save_failed",
+                                error?.localizedDescription ?? localized("error_unknown"))
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func saveToAppFolder() {
+        guard let image = displayedImage else { return }
+        isSaving = true
+        DispatchQueue.global(qos: .userInitiated).async {
+            let fileName = "SafeVision-\(Int(Date().timeIntervalSince1970)).jpg"
+            let url = MediaSaveHelper.saveImageToAppFolder(image, fileName: fileName)
+            DispatchQueue.main.async {
+                isSaving = false
+                if let url {
+                    statusMessage = localizedFormat("status_saved_to_app",
+                                                    url.lastPathComponent)
+                    errorMessage = nil
+                } else {
+                    errorMessage = localizedFormat("status_save_failed",
+                                                   localized("error_unknown"))
+                }
+            }
+        }
+    }
+
+    // MARK: - 错误文案
+
+    private func message(for error: Error) -> String {
+        if let engineError = error as? DetectionEngine.EngineError {
+            switch engineError {
+            case .modelMissing:
+                return localized("status_model_missing")
+            case .loadFailed(let underlying):
+                return localizedFormat("status_model_load_failed",
+                                       underlying.localizedDescription)
+            case .predictionFailed(let underlying):
+                return localizedFormat("status_detection_failed",
+                                       underlying.localizedDescription)
+            }
+        }
+        return localizedFormat("status_detection_failed", error.localizedDescription)
+    }
+}
+
+// MARK: - 点选检测框后的效果编辑
+
+private struct DetectionEffectSheet: View {
+    @EnvironmentObject private var privacy: PrivacySettingsManager
+    @Environment(\.dismiss) private var dismiss
+    let detection: Detection
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section(localizedKey("label_selected_label")) {
+                    LabeledContent(localizedKey("label_selected_label"),
+                                   value: DetectionConfig.displayName(for: detection.label))
+                    LabeledContent(localizedKey("label_confidence"),
+                                   value: String(format: "%.2f", detection.score))
+                    Toggle(localizedKey("label_enabled"), isOn: Binding(
+                        get: { privacy.isEnabled(detection.label) },
+                        set: { privacy.labelEnabled[detection.label] = $0 }
+                    ))
+                    .disabled(DetectionConfig.lockedLabels.contains(detection.label))
+                }
+                Section(localizedKey("label_effect")) {
+                    Picker(localizedKey("label_effect"), selection: Binding(
+                        get: { privacy.effect(for: detection.label) },
+                        set: { privacy.labelEffects[detection.label] = $0 }
+                    )) {
+                        ForEach(MaskEffect.allCases, id: \.self) { effect in
+                            Text(effect.displayName).tag(effect)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    HStack {
+                        Text(localizedKey("label_scale"))
+                        Slider(value: Binding(
+                            get: { Double(privacy.scale(for: detection.label)) },
+                            set: { privacy.labelScales[detection.label] = CGFloat($0) }
+                        ), in: 0.1...3, step: 0.1)
+                        Text(String(format: "%.1fx", privacy.scale(for: detection.label)))
+                            .monospacedDigit()
+                            .frame(width: 44, alignment: .trailing)
+                    }
+                }
+            }
+            .navigationTitle(DetectionConfig.displayName(for: detection.label))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(localizedKey("action_done")) { dismiss() }
+                }
+            }
+        }
+    }
+}
+
+// MARK: - 相机（UIImagePickerController 包装）
+
+private struct CameraPickerView: UIViewControllerRepresentable {
+    @Binding var image: UIImage?
+    var onPicked: () -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    func makeUIViewController(context: Context) -> UIImagePickerController {
+        let picker = UIImagePickerController()
+        picker.sourceType = .camera
+        picker.delegate = context.coordinator
+        return picker
+    }
+
+    func updateUIViewController(_ uiViewController: UIImagePickerController, context: Context) {}
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(parent: self)
+    }
+
+    final class Coordinator: NSObject, UIImagePickerControllerDelegate, UINavigationControllerDelegate {
+        let parent: CameraPickerView
+
+        init(parent: CameraPickerView) {
+            self.parent = parent
+        }
+
+        func imagePickerController(
+            _ picker: UIImagePickerController,
+            didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey: Any]
+        ) {
+            if let picked = info[.originalImage] as? UIImage {
+                parent.image = picked
+                parent.onPicked()
+            }
+            parent.dismiss()
+        }
+
+        func imagePickerControllerDidCancel(_ picker: UIImagePickerController) {
+            parent.dismiss()
+        }
+    }
+}
