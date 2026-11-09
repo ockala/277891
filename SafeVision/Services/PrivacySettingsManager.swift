@@ -2,6 +2,7 @@ import Combine
 import Compression
 import CoreGraphics
 import Foundation
+import UIKit
 
 /// 一组隐私设置快照（预设）。`labelEffects` 存 `MaskEffect.rawValue`，
 /// 缺失的标签在应用时回退到预设的 `defaultEffect`。
@@ -506,19 +507,23 @@ public final class PrivacySettingsManager: ObservableObject {
     /// 把检测结果转成待渲染的打码框：只保留启用的标签。
     /// 框上附带描边、圆形、贴纸信息，供 `MaskRenderer` 直接使用。
     public func maskedBoxes(for detections: [Detection]) -> [MaskedBox] {
-        return detections.compactMap { detection in
-            guard isEnabled(detection.label) else { return nil }
-            let effect = effect(for: detection.label)
-            let isEye = DetectionConfig.isEyeRegionLabel(detection.label)
-            return MaskedBox(
-                box: detection.box,
-                effect: effect,
-                scale: scale(for: detection.label),
-                outline: shouldOutline(detection.label),
-                circular: circularMaskEnabled && !isEye,
-                sticker: effect == .sticker ? sticker(for: detection.label) : nil
-            )
-        }
+        // 先显式过滤掉未启用的标签，再逐个转成打码框（不用 compactMap +
+        // return nil：多返回分支下编译器会把闭包返回类型推断为非可选
+        // 的 MaskedBox，导致 return nil 报错）。
+        return detections
+            .filter { isEnabled($0.label) }
+            .map { detection in
+                let effect = effect(for: detection.label)
+                let isEye = DetectionConfig.isEyeRegionLabel(detection.label)
+                return MaskedBox(
+                    box: detection.box,
+                    effect: effect,
+                    scale: scale(for: detection.label),
+                    outline: shouldOutline(detection.label),
+                    circular: circularMaskEnabled && !isEye,
+                    sticker: effect == .sticker ? sticker(for: detection.label) : nil
+                )
+            }
     }
 
     // MARK: - 预设
@@ -1115,7 +1120,10 @@ private struct ZipArchive {
         var input = Data([0x78, 0x9C])
         input.append(raw)
         input.append(Data([0, 0, 0, 0]))
-        var stream = compression_stream()
+        // compression_stream 是 C 结构体，Swift 没有无参初始化器，
+        // 必须用完整字段初始化（各指针置 nil、大小置 0），再由
+        // compression_stream_init 填 state。
+        var stream = compression_stream(dst_ptr: nil, dst_size: 0, src_ptr: nil, src_size: 0, state: nil)
         guard compression_stream_init(&stream, COMPRESSION_STREAM_DECODE, COMPRESSION_ZLIB) == COMPRESSION_STATUS_OK else {
             return nil
         }
@@ -1135,7 +1143,10 @@ private struct ZipArchive {
                     guard let chunkBase = chunkBuffer.baseAddress?.assumingMemoryBound(to: UInt8.self) else { return 0 }
                     stream.dst_ptr = chunkBase
                     stream.dst_size = chunkSize
-                    status = compression_stream_decode(&stream, 0)
+                    // Compression 框架没有 compression_stream_decode，
+                    // 解码是 init 时定方向（COMPRESSION_STREAM_DECODE），
+                    // 推进用 compression_stream_process。
+                    status = compression_stream_process(&stream, 0)
                     return chunkSize - stream.dst_size
                 }
                 if produced > 0 {
@@ -1155,7 +1166,7 @@ private struct ZipArchive {
                     guard let chunkBase = chunkBuffer.baseAddress?.assumingMemoryBound(to: UInt8.self) else { return 0 }
                     stream.dst_ptr = chunkBase
                     stream.dst_size = chunkSize
-                    status = compression_stream_decode(&stream, 0)
+                    status = compression_stream_process(&stream, 0)
                     return chunkSize - stream.dst_size
                 }
                 if produced > 0 {
