@@ -128,3 +128,47 @@
 
 /* Common */
 "common_notice" = "알림";
+
+/* Browser */
+"tab_browser" = "브라우저";
+"browser_url_placeholder" = "URL 입력";
+"browser_go" = "이동";
+"browser_filter" = "콘텐츠 필터";
+"browser_masked_count" = "%d장 이미지 마스킹됨";
+"browser_loading" = "로딩 중…";
+"browser_hint" = "URL을 입력해 탐색 시작";
+
+/* Preset import */
+"action_import_preset" = "프리셋 가져오기";
+"preset_imported" = "프리셋을 가져왔습니다: %@";
+"preset_imported_skipped" = "%@을(를) 가져왔고 %@을(를) 건너뛰었습니다";
+"preset_import_none" = "가져올 프리셋이 없습니다";
+"preset_import_failed" = "가져오기 실패: %@";
+"preset_import_failed_read" = "파일을 읽을 수 없습니다";
+"preset.import.invalidZip" = "잘못된 프리셋 패키지입니다";
+"preset.import.noManifest" = "프리셋 패키지에 manifest.json이 없습니다";
+"preset.import.invalidManifest" = "manifest.json을 분석하지 못했습니다";
+"preset.import.wrongType" = "Safe Vision 프리셋 패키지가 아닙니다";
+
+/* Sticker */
+"label_sticker" = "스티커";
+"label_current_sticker" = "현재 스티커";
+"action_pick_custom_sticker" = "사용자 지정 스티커 선택";
+"action_use_default_sticker" = "기본 스티커 사용";
+
+/* Outline */
+"label_outline" = "마스크 테두리";
+"label_outline_enabled" = "마스크 테두리";
+"action_outline_labels" = "부위 조정";
+
+/* Reverse masking */
+"label_reverse" = "역방향 마스킹";
+"action_reverse_labels" = "역방향 라벨 선택";
+"label_reverse_pre_render" = "역방향 우선 렌더링";
+"label_reverse_miss_fullscreen" = "역방향 라벨 미적중 시 전체 화면 마스킹";
+"label_empty_fullscreen" = "아무것도 감지되지 않을 때 전체 화면 마스킹";
+"label_reverse_none" = "역방향 라벨이 설정되지 않았습니다";
+
+/* Mask params (additional) */
+"label_mask_scale" = "마스크 확대 배율";
+"label_circular_mask" = "원형 마스크";
