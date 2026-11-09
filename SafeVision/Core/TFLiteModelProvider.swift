@@ -15,11 +15,14 @@ import TensorFlowLite
 /// - standard: `[1, 300, 6]` end-to-end rows `[x1, y1, x2, y2, score, classId]`
 /// - anime:    `[1, 14, 2100]` legacy YOLO `[cx, cy, w, h, 10 class scores]`
 ///
-/// The Metal delegate (`TensorFlowLiteSwift/Metal`) is preferred; if creating
-/// the Metal interpreter fails, or if a Metal `invoke()` fails, the provider
-/// transparently rebuilds a CPU interpreter and retries once. Failures are
-/// reported as thrown errors, never crashes. `Interpreter` is not thread
-/// safe, so all access is serialized with an `NSLock`.
+/// The CPU is the default backend (see `forceCpuInference`): float16
+/// models can produce numerically different results under the Metal
+/// delegate, enough to push a borderline score across the 0.2 threshold
+/// (false positive / missed detection). Metal is only attempted when the
+/// switch is off; if Metal creation or `invoke()` fails, the provider
+/// still transparently rebuilds a CPU interpreter and retries once.
+/// Failures are reported as thrown errors, never crashes. `Interpreter`
+/// is not thread safe, so all access is serialized with an `NSLock`.
 public final class TFLiteModelProvider {
 
     public enum ProviderError: Error, LocalizedError {
@@ -87,6 +90,25 @@ public final class TFLiteModelProvider {
         }
     }
 
+    /// 强制 CPU 推理的开关（UserDefaults，默认开）：float16 模型在 Metal
+    /// delegate 下的数值结果可能与 CPU 不同，足以把接近阈值的分数推过
+    /// 0.2 分界线（误检 / 漏检）；CPU 与安卓的推理结果更接近。
+    /// 关掉开关即可恢复 Metal，方便以后对比；Metal 代码全部保留。
+    public static let forceCpuInferenceDefaultsKey = "com.safevision.app.forceCpuInference"
+
+    public static var forceCpuInference: Bool {
+        get {
+            // 从未设置过时默认 true（不要用 bool(forKey:)，它在缺省时返回 false）。
+            if UserDefaults.standard.object(forKey: forceCpuInferenceDefaultsKey) == nil {
+                return true
+            }
+            return UserDefaults.standard.bool(forKey: forceCpuInferenceDefaultsKey)
+        }
+        set {
+            UserDefaults.standard.set(newValue, forKey: forceCpuInferenceDefaultsKey)
+        }
+    }
+
     /// Loads the model for this provider's profile. Loading twice is a
     /// no-op. Throws `ProviderError.modelNotFound` if the `.tflite` file is
     /// missing from the bundle, `ProviderError.loadFailed` if neither the
@@ -99,19 +121,29 @@ public final class TFLiteModelProvider {
         guard let modelURL = Self.modelURL(for: resourceName) else {
             throw ProviderError.modelNotFound(resourceName: resourceName)
         }
+        // 默认 CPU；只有关掉 forceCpuInference 时才尝试 Metal，失败再回退 CPU。
+        let useMetal = !Self.forceCpuInference
         do {
-            try createInterpreter(modelPath: modelURL.path, useMetal: true)
+            try createInterpreter(modelPath: modelURL.path, useMetal: useMetal)
         } catch {
-            NSLog("[TFLiteModelProvider] Metal delegate 初始化失败，回退 CPU：\(error.localizedDescription)")
-            do {
-                try createInterpreter(modelPath: modelURL.path, useMetal: false)
-            } catch {
+            if useMetal {
+                NSLog("[TFLiteModelProvider] Metal delegate 初始化失败，回退 CPU：\(error.localizedDescription)")
+                do {
+                    try createInterpreter(modelPath: modelURL.path, useMetal: false)
+                } catch {
+                    interpreter = nil
+                    metalDelegate = nil
+                    usingMetalDelegate = false
+                    throw ProviderError.loadFailed(underlying: error)
+                }
+            } else {
                 interpreter = nil
                 metalDelegate = nil
                 usingMetalDelegate = false
                 throw ProviderError.loadFailed(underlying: error)
             }
         }
+        NSLog("[TFLiteModelProvider] 模型已加载：\(resourceName)，后端：\(usingMetalDelegate ? "Metal" : "CPU")")
     }
 
     /// Runs one inference.
