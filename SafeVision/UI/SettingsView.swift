@@ -200,8 +200,8 @@ struct SettingsView: View {
                         }
                         Button(localizedKey("action_apply_preset")) {
                             privacy.applyPreset(preset, profile: appSettings.modelProfile)
-                            noticeMessage = localizedFormat("preset_applied",
-                                                            preset.name)
+                            showNotice(localizedFormat("preset_applied",
+                                                       preset.name))
                         }
                         .buttonStyle(.bordered)
                         .disabled(preset.id == privacy.activePresetID)
@@ -328,13 +328,18 @@ struct SettingsView: View {
                 switch result {
                 case .success(let urls):
                     if let url = urls.first {
+                        NSLog("[SettingsView] fileImporter: picked url=%@",
+                              url.absoluteString)
                         importPreset(from: url)
                     } else {
-                        noticeMessage = localized("preset_import_none")
+                        NSLog("[SettingsView] fileImporter: success but no URL")
+                        showNotice(localized("preset_import_none"))
                     }
                 case .failure(let error):
-                    noticeMessage = localizedFormat("preset_import_failed",
-                                                    error.localizedDescription)
+                    NSLog("[SettingsView] fileImporter: failed: %@",
+                          error.localizedDescription)
+                    showNotice(localizedFormat("preset_import_failed",
+                                               error.localizedDescription))
                 }
             }
             .sheet(isPresented: $showingOutlinePicker) {
@@ -359,7 +364,7 @@ struct SettingsView: View {
                     let name = newPresetName.trimmingCharacters(in: .whitespaces)
                     guard !name.isEmpty else { return }
                     privacy.savePreset(name: name, profile: appSettings.modelProfile)
-                    noticeMessage = localizedFormat("preset_saved", name)
+                    showNotice(localizedFormat("preset_saved", name))
                     newPresetName = ""
                 }
                 Button(localizedKey("action_cancel"), role: .cancel) {
@@ -387,8 +392,8 @@ struct SettingsView: View {
                 Button(localizedKey("action_delete"), role: .destructive) {
                     if let preset = presetToDelete {
                         privacy.deletePreset(preset)
-                        noticeMessage = localizedFormat("preset_deleted",
-                                                        preset.name)
+                        showNotice(localizedFormat("preset_deleted",
+                                                   preset.name))
                     }
                     presetToDelete = nil
                 }
@@ -400,14 +405,51 @@ struct SettingsView: View {
                     Text(localizedFormat("gallery_delete_message", preset.name))
                 }
             }
-            .alert(localizedKey("common_notice"),
-                   isPresented: Binding(
-                    get: { !noticeMessage.isEmpty },
-                    set: { if !$0 { noticeMessage = "" } }
-                   )) {
-                Button(localizedKey("action_done"), role: .cancel) {}
-            } message: {
-                Text(noticeMessage)
+            // 提示横条（overlay），替代原来 noticeMessage 的 `.alert`：
+            // 同一个视图挂 5 个 `.alert` 会互相冲突，且 fileImporter 刚
+            // 关闭时立即弹 alert 会被 SwiftUI 吞掉——用户看到的就是
+            // “选完文件没有任何反应”。overlay 走普通视图渲染，不经过
+            // alert 呈现系统，任何时候都能显示出来。
+            .overlay(alignment: .top) {
+                if !noticeMessage.isEmpty {
+                    noticeToast
+                }
+            }
+        }
+    }
+
+    /// 顶部提示横条：点一下或 5 秒后自动消失。
+    private var noticeToast: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "info.circle.fill")
+                .foregroundColor(.accentColor)
+            Text(noticeMessage)
+                .font(.subheadline)
+                .lineLimit(3)
+            Spacer()
+            Image(systemName: "xmark.circle.fill")
+                .foregroundColor(.secondary)
+        }
+        .padding(12)
+        .background(.regularMaterial)
+        .cornerRadius(12)
+        .shadow(radius: 4)
+        .padding(.horizontal)
+        .padding(.top, 8)
+        .onTapGesture { noticeMessage = "" }
+    }
+
+    /// 设置提示文字并安排 5 秒后自动消失。DispatchQueue.main.async
+    /// 递延一轮：fileImporter 刚关闭时立即改状态，提示会被吞掉；
+    /// 下一轮再改就能正常显示。自动消失时只清掉同一条消息，避免
+    /// 覆盖掉后来新设的提示。
+    private func showNotice(_ message: String) {
+        DispatchQueue.main.async {
+            self.noticeMessage = message
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
+                if self.noticeMessage == message {
+                    self.noticeMessage = ""
+                }
             }
         }
     }
@@ -419,35 +461,62 @@ struct SettingsView: View {
     /// 的文件可能是远程的，直接 Data(contentsOf:) 会读失败，
     /// coordinator 会先把文件下载到本地再读。
     private func importPreset(from url: URL) {
+        NSLog("[SettingsView] importPreset: url=%@", url.absoluteString)
         let didAccess = url.startAccessingSecurityScopedResource()
+        NSLog("[SettingsView] importPreset: startAccessingSecurityScopedResource=%@",
+              didAccess ? "YES" : "NO")
         defer {
             if didAccess { url.stopAccessingSecurityScopedResource() }
         }
+        // 文件可能在第三方提供者（如“小米互联”）上、尚未下载到本地：
+        // 先用 NSFileCoordinator 触发下载并读取；失败时再直接读一次。
         var zipData: Data?
         var readError: NSError?
         NSFileCoordinator().coordinate(
             readingItemAt: url, options: [], error: &readError
         ) { coordinatedURL in
             zipData = try? Data(contentsOf: coordinatedURL)
+            if zipData == nil {
+                NSLog("[SettingsView] importPreset: Data(contentsOf: coordinatedURL) failed")
+            }
+        }
+        if zipData == nil {
+            if let error = readError {
+                NSLog("[SettingsView] importPreset: NSFileCoordinator error: %@",
+                      error.localizedDescription)
+            } else {
+                NSLog("[SettingsView] importPreset: coordinator read returned no data, no error")
+            }
+            // 兜底：直接读原 URL（有些提供者在 coordinator 外反而能读到）。
+            zipData = try? Data(contentsOf: url)
+            if zipData == nil {
+                NSLog("[SettingsView] importPreset: fallback Data(contentsOf: url) also failed")
+            }
         }
         guard let data = zipData else {
-            noticeMessage = localized("preset_import_failed_read")
+            showNotice(localized("preset_import_failed_read"))
             return
         }
+        NSLog("[SettingsView] importPreset: read %d bytes, importing…", data.count)
         let result = privacy.importPresetPackage(zipData: data)
         if let error = result.error {
-            noticeMessage = localizedFormat("preset_import_failed", error)
+            NSLog("[SettingsView] importPreset: import failed: %@", error)
+            showNotice(localizedFormat("preset_import_failed", error))
         } else if result.imported.isEmpty {
-            noticeMessage = localized("preset_import_none")
+            NSLog("[SettingsView] importPreset: no preset imported, skipped=%@",
+                  result.skipped.joined(separator: ","))
+            showNotice(localized("preset_import_none"))
         } else {
             let imported = result.imported.joined(separator: "、")
+            NSLog("[SettingsView] importPreset: imported=%@, skipped=%@",
+                  imported, result.skipped.joined(separator: ","))
             if result.skipped.isEmpty {
-                noticeMessage = localizedFormat("preset_imported", imported)
+                showNotice(localizedFormat("preset_imported", imported))
             } else {
-                noticeMessage = localizedFormat(
+                showNotice(localizedFormat(
                     "preset_imported_skipped",
                     imported,
-                    result.skipped.joined(separator: "、"))
+                    result.skipped.joined(separator: "、")))
             }
         }
     }
