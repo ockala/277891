@@ -229,7 +229,11 @@ public final class VideoProcessor: ObservableObject {
         // 写到编码输入上（与原来一致）。
         // 取不到编码尺寸时回退为显示尺寸。
         let encodedSize: CGSize
-        if let formatDescription = videoTrack.formatDescriptions.first as? CMVideoFormatDescription {
+        if let firstDescription = videoTrack.formatDescriptions.first {
+            // 视频轨的 formatDescriptions 一定是 CMVideoFormatDescription
+            //（编译器也如此判定，as? 会报“条件转换一定成功”），
+            // 故先判空再无条件转换。
+            let formatDescription = firstDescription as! CMVideoFormatDescription
             let dimensions = CMVideoFormatDescriptionGetDimensions(formatDescription)
             if dimensions.width > 0, dimensions.height > 0 {
                 encodedSize = CGSize(width: CGFloat(dimensions.width), height: CGFloat(dimensions.height))
@@ -662,9 +666,12 @@ public final class VideoProcessor: ObservableObject {
     /// 音轨是否为 AAC（可直传进 MP4）。与 Android
     /// `VideoCodecUtils.canPassthroughToMp4` 一致（只认 AAC）。
     private func isAACAudio(track: AVAssetTrack) -> Bool {
-        guard let formatDescription = track.formatDescriptions.first as? CMAudioFormatDescription else {
+        guard let firstDescription = track.formatDescriptions.first else {
             return false
         }
+        // 音轨的 formatDescriptions 一定是 CMAudioFormatDescription，
+        // as? 会报“条件转换一定成功”，故先判空再无条件转换。
+        let formatDescription = firstDescription as! CMAudioFormatDescription
         let mediaSubType = CMFormatDescriptionGetMediaSubType(formatDescription)
         return mediaSubType == kAudioFormatMPEG4AAC
             || mediaSubType == kAudioFormatMPEG4AAC_HE
@@ -674,8 +681,11 @@ public final class VideoProcessor: ObservableObject {
 
     /// 音轨的采样率与声道数（供重编码为 AAC 时用）。
     private func audioFormat(for track: AVAssetTrack) -> (sampleRate: Double, channels: Int)? {
-        guard let formatDescription = track.formatDescriptions.first as? CMAudioFormatDescription,
-              let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(formatDescription) else {
+        guard let firstDescription = track.formatDescriptions.first else {
+            return nil
+        }
+        let formatDescription = firstDescription as! CMAudioFormatDescription
+        guard let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(formatDescription) else {
             return nil
         }
         let sampleRate = asbd.pointee.mSampleRate
