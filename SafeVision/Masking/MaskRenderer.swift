@@ -4,21 +4,22 @@ import UIKit
 /// 真实打码渲染（Core Graphics + Core Image 实现）。
 ///
 /// 坐标约定：所有框均为原图像素坐标，左上角原点、y 向下，与
-/// `Detection.box` 一致。`maskedCGImage` 是视频管线用的高性能路径，
-/// 全程只操作 `CGImage`，不经过 `UIImage`。
+/// `Detection.box` 一致。
 ///
-/// 每个框先按 `scale` 以框中心缩放、再 clamp 到图内；框重叠时按数组
-/// 顺序依次绘制。马赛克 / 高斯 / 素描的采样源均为原图区域（与 Android
-/// `BlurEffects.drawMosaic/drawGaussian/drawSobelEdge` 一致：它们都以
-/// source bitmap 的裁剪区域为输入，而不是已打码的合成图）。
+/// 方向：合成统一用 `UIGraphicsImageRenderer`（UIKit 保证输出方向
+/// 为 `.up`）。旧实现用裸 `CGContext` + 手动翻转 + `makeImage()`，
+/// 实测输出整图上下颠倒（图片与视频两条管线都翻），因此改走
+/// UIKit 渲染路径；`extractPixels`（只读像素取样）仍用裸上下文。
+///
+/// 效果与 Android `DetectionRenderEngine` / `BlurEffects` 对齐：
+/// 马赛克块大小取当前设置的 `mosaicBlockSize`（预设值，如 ZISUE
+/// 的 19），高斯半径取 `gaussianRadius`；描边为红色粗边（贴纸模式
+/// 不画）；反向遮挡与全屏回退见 `renderDetections`。
 public enum MaskRenderer {
-
-    /// 高斯模糊半径（像素），与 Android 默认值 12 一致。
-    public static let gaussianRadius: CGFloat = 12
 
     private static let ciContext = CIContext()
 
-    // MARK: - 入口
+    // MARK: - 入口（低阶：直接给框）
 
     /// 对 `UIImage` 打码。结果为方向已归正（`.up`）的新图。
     /// `boxes` 为空时直接返回原图。
@@ -37,45 +38,237 @@ public enum MaskRenderer {
         guard width > 0, height > 0 else { return nil }
         guard !boxes.isEmpty else { return image }
 
-        guard let colorSpace = CGColorSpace(name: CGColorSpace.sRGB),
-              let context = CGContext(
-                data: nil,
-                width: width,
-                height: height,
-                bitsPerComponent: 8,
-                bytesPerRow: 0,
-                space: colorSpace,
-                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-                    | CGBitmapInfo.byteOrder32Big.rawValue
-              ) else { return nil }
-
-        // CG 位图上下文默认左下角原点；翻转为左上角原点后，绘图坐标与
-        // Detection.box 的像素坐标完全一致，且 backing store 的第 0 行
-        // 就是图像顶行，像素读写无需再换算。
-        context.translateBy(x: 0, y: CGFloat(height))
-        context.scaleBy(x: 1, y: -1)
-        context.interpolationQuality = .high
-        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
-
-        let bounds = CGRect(x: 0, y: 0, width: width, height: height)
-        for maskedBox in boxes {
-            let rect = scaledClampedRect(maskedBox, in: bounds)
-            guard rect.width >= 1, rect.height >= 1 else { continue }
-            switch maskedBox.effect {
-            case .mosaic:
-                drawMosaic(in: context, source: image, rect: rect)
-            case .black:
-                context.setFillColor(UIColor.black.cgColor)
-                context.fill(rect)
-            case .blur:
-                drawBlur(in: context, source: image, rect: rect)
-            case .sketch:
-                drawSketch(in: context, source: image, rect: rect)
-            case .sticker:
-                drawSticker(in: context, source: image, rect: rect)
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        format.opaque = false
+        let renderer = UIGraphicsImageRenderer(
+            size: CGSize(width: width, height: height), format: format)
+        let result = renderer.image { rendererContext in
+            let context = rendererContext.cgContext
+            context.interpolationQuality = .high
+            context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+            let bounds = CGRect(x: 0, y: 0, width: width, height: height)
+            for maskedBox in boxes {
+                let rect = scaledClampedRect(maskedBox, in: bounds)
+                guard rect.width >= 1, rect.height >= 1 else { continue }
+                drawMaskedBox(maskedBox, rect: rect, source: image, in: context)
             }
+            drawOutlines(boxes: boxes, bounds: bounds, in: context)
         }
-        return context.makeImage()
+        return result.cgImage
+    }
+
+    // MARK: - 完整渲染（正常 / 反向 / 全屏回退）
+
+    /// 按当前隐私设置对检测结果做完整渲染，对齐 Android
+    /// `DetectionRenderEngine.applyDetections`：
+    ///
+    /// - 反向标签（`reverseLabels`）命中时：整图先按反向模式打码，
+    ///   再把反向区域恢复为原图（只保留反向标签清晰），最后画正常框；
+    ///   `reversePreRenderEnabled` 为 false 时顺序反过来（先画正常框，
+    ///   再做反向遮挡）。
+    /// - 配置了反向标签、且 `reverseLabelMissFullscreenEnabled` 开着、
+    ///   但一张图里一个反向标签都没检测到时：整图打码（全屏回退）。
+    /// - `accessibilityEmptyReverseFullscreenEnabled` 开着、且一张图
+    ///   里没有任何检测结果时：整图打码。
+    /// - 无检测且无需全屏回退时返回原图。
+    ///
+    /// `detections` 为原图像素坐标（左上角原点）。图片与视频两条
+    /// 管线都应走这个入口（不要只调低阶的 `maskedImage(_:boxes:)`，
+    /// 否则反向/全屏逻辑会被跳过）。
+    public static func renderDetections(_ image: UIImage, detections: [Detection]) -> UIImage? {
+        guard let normalized = normalizedUpImage(image),
+              let cgImage = normalized.cgImage,
+              let rendered = renderDetections(cgImage, detections: detections) else { return nil }
+        return UIImage(cgImage: rendered, scale: image.scale, orientation: .up)
+    }
+
+    public static func renderDetections(_ cgImage: CGImage, detections: [Detection]) -> CGImage? {
+        let width = cgImage.width
+        let height = cgImage.height
+        guard width > 0, height > 0 else { return nil }
+        let settings = PrivacySettingsManager.shared
+        let reverseLabels = settings.reverseLabels
+        let hasReverseLabels = !reverseLabels.isEmpty
+        let rawDetectionsPresent = !detections.isEmpty
+
+        // 全屏回退：识别到内容但未命中任何反向标签。
+        let missFallback = settings.reverseLabelMissFullscreenEnabled
+            && hasReverseLabels && rawDetectionsPresent
+            && !detections.contains(where: { reverseLabels.contains($0.label) })
+        // 全屏回退：无任何内容（且配置了反向标签）。
+        let emptyFallback = settings.accessibilityEmptyReverseFullscreenEnabled
+            && hasReverseLabels && !rawDetectionsPresent
+        if missFallback || emptyFallback {
+            let fallbackLabel = reverseLabels.first
+            let mode = settings.effect(for: fallbackLabel ?? "")
+            let sticker = fallbackLabel.flatMap { settings.sticker(for: $0) }
+                ?? settings.defaultStickerImage()
+            return fullscreenMaskedCGImage(cgImage, effect: mode, sticker: sticker)
+        }
+        if detections.isEmpty {
+            return cgImage
+        }
+
+        let reverseDetections = detections.filter { reverseLabels.contains($0.label) }
+        let normalDetections = detections.filter { !reverseLabels.contains($0.label) }
+        let normalBoxes = settings.maskedBoxes(for: normalDetections)
+
+        guard !reverseDetections.isEmpty else {
+            return maskedCGImage(cgImage, boxes: normalBoxes)
+        }
+
+        // 反向模式：多个反向框效果一致时用该效果，不一致时用默认效果
+        //（与 Android `reverseModeMixed` 一致）。
+        let reverseEffects = reverseDetections.map { settings.effect(for: $0.label) }
+        let reverseMode: MaskEffect
+        if let first = reverseEffects.first,
+           reverseEffects.allSatisfy({ $0 == first }) {
+            reverseMode = first
+        } else {
+            reverseMode = settings.defaultEffect
+        }
+        let reverseBoxes = settings.maskedBoxes(for: reverseDetections)
+        // 反向贴纸：单个反向框时用该标签的贴纸，多个时用默认贴纸
+        //（与 Android `applyReverseMask` 一致）。
+        let reverseSticker: UIImage?
+        if reverseBoxes.count == 1, let only = reverseBoxes.first {
+            reverseSticker = only.sticker ?? settings.defaultStickerImage()
+        } else {
+            reverseSticker = settings.defaultStickerImage()
+        }
+
+        if settings.reversePreRenderEnabled {
+            // 先反向遮挡，再画正常框。
+            guard let reversed = reverseMaskedCGImage(
+                cgImage, reverseBoxes: reverseBoxes, mode: reverseMode, sticker: reverseSticker
+            ) else { return nil }
+            return maskedCGImage(reversed, boxes: normalBoxes)
+        } else {
+            // 先画正常框，再做反向遮挡（反向区域从已画好正常框的图上恢复，
+            // 与 Android 非预渲染路径一致）。
+            let normalRendered = maskedCGImage(cgImage, boxes: normalBoxes) ?? cgImage
+            return reverseMaskedCGImage(
+                normalRendered, reverseBoxes: reverseBoxes, mode: reverseMode,
+                sticker: reverseSticker, restoreSource: cgImage
+            )
+        }
+    }
+
+    /// 整图打码（全屏回退）。效果取反向标签的效果（无则默认效果）。
+    public static func fullscreenMaskedCGImage(
+        _ image: CGImage, effect: MaskEffect, sticker: UIImage?
+    ) -> CGImage? {
+        let width = image.width
+        let height = image.height
+        guard width > 0, height > 0 else { return nil }
+        let bounds = CGRect(x: 0, y: 0, width: width, height: height)
+        let box = MaskedBox(box: bounds, effect: effect, scale: 1.0, sticker: sticker)
+        return maskedCGImage(image, boxes: [box])
+    }
+
+    /// 反向遮挡：整图按 `mode` 打码，再把 `reverseBoxes` 的区域恢复为
+    /// 原图（只保留反向标签清晰）。`restoreSource` 为恢复时取像素的
+    /// 原图（预渲染路径与当前图相同；非预渲染路径取打码前的原图）。
+    public static func reverseMaskedCGImage(
+        _ image: CGImage,
+        reverseBoxes: [MaskedBox],
+        mode: MaskEffect,
+        sticker: UIImage?,
+        restoreSource: CGImage? = nil
+    ) -> CGImage? {
+        let width = image.width
+        let height = image.height
+        guard width > 0, height > 0 else { return nil }
+        let bounds = CGRect(x: 0, y: 0, width: width, height: height)
+        let restore = restoreSource ?? image
+        // 反向框先按 scale 缩放并 clamp，取有效框。
+        let rects: [(box: MaskedBox, rect: CGRect)] = reverseBoxes.compactMap { maskedBox in
+            let rect = scaledClampedRect(maskedBox, in: bounds)
+            guard rect.width >= 1, rect.height >= 1 else { return nil }
+            return (maskedBox, rect)
+        }
+        guard !rects.isEmpty else { return image }
+
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        format.opaque = false
+        let renderer = UIGraphicsImageRenderer(
+            size: CGSize(width: width, height: height), format: format)
+        let result = renderer.image { rendererContext in
+            let context = rendererContext.cgContext
+            context.interpolationQuality = .high
+            // 1. 整图按反向模式打码（贴纸模式先铺原图再盖贴纸，
+            //    与 Android `applyReverseMask` 一致；贴纸缺失回退马赛克）。
+            if mode == .sticker {
+                if let stickerImage = sticker ?? StickerLoader.defaultSticker() {
+                    // 先铺原图再盖贴纸，半透明贴纸才能正确叠加
+                    //（与 Android `applyReverseMask` 一致）。
+                    context.draw(image, in: bounds)
+                    drawSticker(in: context, source: image, rect: bounds, stickerOverride: stickerImage)
+                } else {
+                    let fullBox = MaskedBox(box: bounds, effect: .mosaic)
+                    drawMaskedBox(fullBox, rect: bounds, source: image, in: context)
+                }
+            } else {
+                let fullBox = MaskedBox(box: bounds, effect: mode)
+                drawMaskedBox(fullBox, rect: bounds, source: image, in: context)
+            }
+            // 2. 把反向区域恢复为原图（圆形框按圆形恢复）。
+            for (maskedBox, rect) in rects {
+                if maskedBox.circular {
+                    let circle = circumscribedCircleBounds(for: rect)
+                    context.saveGState()
+                    context.addEllipse(in: circle)
+                    context.clip()
+                    context.draw(restore, in: bounds)
+                    context.restoreGState()
+                } else {
+                    context.draw(restore, in: rect)
+                }
+            }
+            // 3. 反向区域的描边。
+            drawOutlines(boxes: reverseBoxes, bounds: bounds, in: context)
+        }
+        return result.cgImage
+    }
+
+    // MARK: - 单框绘制
+
+    /// 对一个框应用效果。圆形框时效果限制在外接圆内
+    ///（Android `drawWithCircularClip`）。
+    private static func drawMaskedBox(
+        _ maskedBox: MaskedBox, rect: CGRect, source: CGImage, in context: CGContext
+    ) {
+        if maskedBox.circular {
+            let circle = circumscribedCircleBounds(for: rect)
+            context.saveGState()
+            context.addEllipse(in: circle)
+            context.clip()
+            applyEffect(maskedBox, rect: circle, source: source, in: context)
+            context.restoreGState()
+        } else {
+            applyEffect(maskedBox, rect: rect, source: source, in: context)
+        }
+    }
+
+    private static func applyEffect(
+        _ maskedBox: MaskedBox, rect: CGRect, source: CGImage, in context: CGContext
+    ) {
+        switch maskedBox.effect {
+        case .mosaic:
+            drawMosaic(in: context, source: source, rect: rect)
+        case .black:
+            context.setFillColor(UIColor.black.cgColor)
+            context.fill(rect)
+        case .blur:
+            drawBlur(in: context, source: source, rect: rect)
+        case .sketch:
+            drawSketch(in: context, source: source, rect: rect)
+        case .sticker:
+            drawSticker(in: context, source: source, rect: rect,
+                        stickerOverride: maskedBox.sticker)
+        }
     }
 
     // MARK: - 框变换
@@ -101,6 +294,51 @@ public enum MaskRenderer {
         let x1 = min(width, Int(ceil(rect.maxX)))
         let y1 = min(height, Int(ceil(rect.maxY)))
         return CGRect(x: x0, y: y0, width: max(0, x1 - x0), height: max(0, y1 - y0))
+    }
+
+    /// 框的外接圆包围盒（圆心为框中心，半径为框对角线的一半），
+    /// 与 Android `BlurEffects.circumscribedCircleBounds` 一致。
+    private static func circumscribedCircleBounds(for rect: CGRect) -> CGRect {
+        let radius = hypot(rect.width, rect.height) / 2
+        return CGRect(x: rect.midX - radius, y: rect.midY - radius,
+                      width: radius * 2, height: radius * 2)
+    }
+
+    // MARK: - 描边
+
+    /// 描边线宽：`max(4, min(宽,高) * 0.04)`，与 Android
+    /// `BlurEffects.outlineStrokeWidth` 一致。
+    private static func outlineStrokeWidth(for rect: CGRect) -> CGFloat {
+        return max(4, min(rect.width, rect.height) * 0.04)
+    }
+
+    /// 给需要描边的框画红色粗边（贴纸模式不画，与 Android 一致；
+    /// 描边向内缩 stroke/2，线不超出框外）。
+    private static func drawOutlines(boxes: [MaskedBox], bounds: CGRect, in context: CGContext) {
+        for maskedBox in boxes {
+            guard maskedBox.outline, maskedBox.effect != .sticker else { continue }
+            let rect = scaledClampedRect(maskedBox, in: bounds)
+            guard rect.width >= 1, rect.height >= 1 else { continue }
+            let stroke = outlineStrokeWidth(for: rect)
+            let inset = rect.insetBy(dx: stroke / 2, dy: stroke / 2)
+            guard inset.width > 0, inset.height > 0 else { continue }
+            context.saveGState()
+            context.setStrokeColor(UIColor.red.cgColor)
+            context.setLineWidth(stroke)
+            context.setLineJoin(.round)
+            context.setLineCap(.round)
+            if maskedBox.circular {
+                let circle = circumscribedCircleBounds(for: rect)
+                let radius = max(0, hypot(circle.width, circle.height) / 2 - stroke / 2)
+                context.addEllipse(in: CGRect(
+                    x: circle.midX - radius, y: circle.midY - radius,
+                    width: radius * 2, height: radius * 2))
+                context.strokePath()
+            } else {
+                context.stroke(inset)
+            }
+            context.restoreGState()
+        }
     }
 
     // MARK: - 像素读写
@@ -166,14 +404,18 @@ public enum MaskRenderer {
 
     // MARK: - 马赛克
 
-    /// 块大小按框尺寸自适应：`max(8, min(40, min(框宽, 框高) / 12))`。
+    /// 块大小取当前设置的 `mosaicBlockSize`（预设值，例如 ZISUE 的 19），
+    /// 与 Android `drawMosaic(canvas, source, rect, getMosaicBlockSize())`
+    /// 一致；旧实现按框尺寸算 `min(宽,高)/12` 且忽略设置，导致块大小
+    /// 不对（小框上只有两三块、看起来像纯色块）。
     /// 每块取左上角像素颜色填充整块（与 Android
-    /// `BlurEffects.createMosaicBitmap` 的取样方式一致），不透明。
+    /// `BlurEffects.createMosaicBitmap` 的取样方式一致），块大、格子清楚，
+    /// 与预设视频里的效果一致。
     private static func drawMosaic(in context: CGContext, source: CGImage, rect: CGRect) {
         let pixelRect = integralRect(rect, width: source.width, height: source.height)
         guard pixelRect.width >= 1, pixelRect.height >= 1,
               let buffer = extractPixels(from: source, rect: pixelRect) else { return }
-        let blockSize = max(8, min(40, Int(min(pixelRect.width, pixelRect.height) / 12)))
+        let blockSize = max(1, PrivacySettingsManager.shared.mosaicBlockSize)
         for blockY in stride(from: 0, to: buffer.height, by: blockSize) {
             for blockX in stride(from: 0, to: buffer.width, by: blockSize) {
                 let offset = (blockY * buffer.width + blockX) * 4
@@ -195,9 +437,10 @@ public enum MaskRenderer {
 
     // MARK: - 高斯模糊
 
-    /// 只模糊框内区域：裁剪出框区域 → `CIGaussianBlur`（半径 12）→
-    /// 合成回原位置。不做全图模糊。`clampedToExtent()` 防止裁剪边缘
-    /// 采样到透明黑边。
+    /// 只模糊框内区域：裁剪出框区域 → `CIGaussianBlur` → 合成回原位置。
+    /// 半径取当前设置的 `gaussianRadius`（预设值，例如 ZISUE 的 47），
+    /// 与 Android `drawGaussian(canvas, source, rect, getGaussianRadius())`
+    /// 一致；旧实现写死 12，设置页的滑杆不起作用。
     private static func drawBlur(in context: CGContext, source: CGImage, rect: CGRect) {
         let pixelRect = integralRect(rect, width: source.width, height: source.height)
         guard pixelRect.width >= 1, pixelRect.height >= 1,
@@ -207,7 +450,7 @@ public enum MaskRenderer {
             name: "CIGaussianBlur",
             parameters: [
                 kCIInputImageKey: input,
-                kCIInputRadiusKey: gaussianRadius
+                kCIInputRadiusKey: CGFloat(PrivacySettingsManager.shared.gaussianRadius)
             ]
         ),
         let output = filter.outputImage else { return }
@@ -280,10 +523,13 @@ public enum MaskRenderer {
 
     /// 照搬 Android `BlurEffects.drawSticker`（非 fitInsideRect 分支）：
     /// 目标边长 = 框的长边，缩放倍数 = 目标边长 / 贴纸短边，贴纸等比
-    /// 缩放后居中绘制到框上。贴纸图缺失时回退为马赛克，避免敏感
-    /// 内容裸露（贴纸文件由主包提供，见 `StickerLoader`）。
-    private static func drawSticker(in context: CGContext, source: CGImage, rect: CGRect) {
-        guard let sticker = StickerLoader.defaultSticker(),
+    /// 缩放后居中绘制到框上。`stickerOverride` 为该标签指定的贴纸
+    /// （预设 `labelStickerUris`），nil 时用默认贴纸；贴纸图缺失时
+    /// 回退为马赛克，避免敏感内容裸露。
+    private static func drawSticker(
+        in context: CGContext, source: CGImage, rect: CGRect, stickerOverride: UIImage? = nil
+    ) {
+        guard let sticker = stickerOverride ?? StickerLoader.defaultSticker(),
               let stickerImage = sticker.cgImage else {
             drawMosaic(in: context, source: source, rect: rect)
             return
