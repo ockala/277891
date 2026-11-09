@@ -1,5 +1,6 @@
 import CoreGraphics
 import Foundation
+import UIKit
 
 /// 打码效果。对应 Android `PrivacySettingsManager` 的遮挡模式编号
 /// （0 马赛克、1 纯黑、2 高斯、3 贴纸、4 素描），iOS 版去掉 Android
