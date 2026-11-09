@@ -128,3 +128,47 @@
 
 /* Common */
 "common_notice" = "提示";
+
+/* Browser */
+"tab_browser" = "瀏覽器";
+"browser_url_placeholder" = "輸入網址";
+"browser_go" = "前往";
+"browser_filter" = "內容過濾";
+"browser_masked_count" = "已打碼 %d 張圖片";
+"browser_loading" = "載入中…";
+"browser_hint" = "輸入網址開始瀏覽";
+
+/* Preset import */
+"action_import_preset" = "匯入預設";
+"preset_imported" = "已匯入預設：%@";
+"preset_imported_skipped" = "已匯入 %@，已跳過 %@";
+"preset_import_none" = "沒有可匯入的預設";
+"preset_import_failed" = "匯入失敗：%@";
+"preset_import_failed_read" = "無法讀取該檔案";
+"preset.import.invalidZip" = "無效的預設包";
+"preset.import.noManifest" = "預設包內沒有 manifest.json";
+"preset.import.invalidManifest" = "manifest.json 解析失敗";
+"preset.import.wrongType" = "不是 Safe Vision 預設包";
+
+/* Sticker */
+"label_sticker" = "貼紙";
+"label_current_sticker" = "目前貼紙";
+"action_pick_custom_sticker" = "選擇自訂貼紙";
+"action_use_default_sticker" = "使用預設貼紙";
+
+/* Outline */
+"label_outline" = "遮擋紅邊";
+"label_outline_enabled" = "遮擋紅邊";
+"action_outline_labels" = "部位調整";
+
+/* Reverse masking */
+"label_reverse" = "反向遮擋";
+"action_reverse_labels" = "選擇反向標籤";
+"label_reverse_pre_render" = "反向優先渲染";
+"label_reverse_miss_fullscreen" = "未命中反向標籤時全螢幕遮擋";
+"label_empty_fullscreen" = "無任何內容時全螢幕遮擋";
+"label_reverse_none" = "未設定反向標籤";
+
+/* Mask params (additional) */
+"label_mask_scale" = "遮擋放大倍率";
+"label_circular_mask" = "圓形遮擋";
