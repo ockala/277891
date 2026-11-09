@@ -269,20 +269,26 @@ struct ImageProcessingView: View {
 
     // MARK: - 打码（后台线程）
 
+    /// 走 `renderDetections`（不是低阶的 `maskedImage`），让图片也应用
+    /// 反向遮挡与全屏回退（与视频管线一致）。
     private func applyMask() {
-        guard let image = selectedImage, !detections.isEmpty else { return }
+        guard let image = selectedImage else { return }
+        // 无检测结果且不需要全屏回退时，没有可打码的框。
+        let needsFullscreen = privacy.accessibilityEmptyReverseFullscreenEnabled
+            && !privacy.reverseLabels.isEmpty && detections.isEmpty
+        guard !detections.isEmpty || needsFullscreen else {
+            statusMessage = localized("label_no_mask_boxes")
+            return
+        }
         errorMessage = nil
         isMasking = true
-        let boxes = privacy.maskedBoxes(for: detections)
         DispatchQueue.global(qos: .userInitiated).async {
-            let result = MaskRenderer.maskedImage(image, boxes: boxes)
+            let result = MaskRenderer.renderDetections(image, detections: detections)
             DispatchQueue.main.async {
                 isMasking = false
                 if let result {
                     maskedImage = result
                     statusMessage = localized("status_mask_applied")
-                } else if boxes.isEmpty {
-                    statusMessage = localized("label_no_mask_boxes")
                 } else {
                     errorMessage = localized("error_unknown")
                 }
@@ -365,6 +371,18 @@ private struct DetectionEffectSheet: View {
     @EnvironmentObject private var privacy: PrivacySettingsManager
     @Environment(\.dismiss) private var dismiss
     let detection: Detection
+    @State private var stickerItem: PhotosPickerItem?
+
+    /// 该标签当前贴纸的文件名（未单独设置时显示默认贴纸）。
+    private var stickerDisplayName: String {
+        if let uri = privacy.labelStickerUris[detection.label] {
+            return (uri as NSString).lastPathComponent
+        }
+        if let uri = privacy.stickerUri {
+            return (uri as NSString).lastPathComponent
+        }
+        return "Default-stickers.png"
+    }
 
     var body: some View {
         NavigationStack {
@@ -378,7 +396,7 @@ private struct DetectionEffectSheet: View {
                         get: { privacy.isEnabled(detection.label) },
                         set: { privacy.labelEnabled[detection.label] = $0 }
                     ))
-                    .disabled(DetectionConfig.lockedLabels.contains(detection.label))
+                    // 锁定已取消：所有标签都可自由开关（见 DetectionConfig）。
                 }
                 Section(localizedKey("label_effect")) {
                     Picker(localizedKey("label_effect"), selection: Binding(
@@ -399,6 +417,32 @@ private struct DetectionEffectSheet: View {
                         Text(String(format: "%.1fx", privacy.scale(for: detection.label)))
                             .monospacedDigit()
                             .frame(width: 44, alignment: .trailing)
+                    }
+                }
+                // 该标签效果为贴纸时，可单独选贴纸（与设置页的每标签贴纸入口一致）。
+                if privacy.effect(for: detection.label) == .sticker {
+                    Section(localizedKey("label_sticker")) {
+                        LabeledContent(localizedKey("label_current_sticker"),
+                                       value: stickerDisplayName)
+                        PhotosPicker(selection: $stickerItem, matching: .images) {
+                            Label(localizedKey("action_pick_custom_sticker"),
+                                  systemImage: "photo")
+                        }
+                        .onChange(of: stickerItem) { _, newItem in
+                            guard let newItem else { return }
+                            Task {
+                                if let data = try? await newItem.loadTransferable(type: Data.self),
+                                   let relativePath = StickerLoader.saveCustomSticker(
+                                       data: data, fileName: "sticker.png") {
+                                    await MainActor.run {
+                                        privacy.labelStickerUris[detection.label] = relativePath
+                                    }
+                                }
+                            }
+                        }
+                        Button(localizedKey("action_use_default_sticker")) {
+                            privacy.labelStickerUris.removeValue(forKey: detection.label)
+                        }
                     }
                 }
             }

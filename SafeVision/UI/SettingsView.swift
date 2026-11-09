@@ -1,6 +1,8 @@
+import PhotosUI
 import SwiftUI
+import UniformTypeIdentifiers
 
-/// 设置页：模型、标签设置、打码参数、预设、视频、外观、语言、关于。
+/// 设置页：模型、标签设置、打码参数、贴纸、描边、反向遮挡、预设、视频、外观、语言、关于。
 struct SettingsView: View {
     @EnvironmentObject private var privacy: PrivacySettingsManager
     @EnvironmentObject private var appSettings: AppSettingsManager
@@ -11,18 +13,36 @@ struct SettingsView: View {
     @State private var showingLanguageRestartNote = false
     @State private var presetToDelete: PrivacyPreset?
     @State private var noticeMessage = ""
+    @State private var showingPresetImporter = false
+    @State private var showingOutlinePicker = false
+    @State private var showingReversePicker = false
+    @State private var stickerItem: PhotosPickerItem?
 
     private var labels: [String] {
         DetectionConfig.labels(for: appSettings.modelProfile)
     }
 
-    private var lockedLabels: [String] {
-        DetectionConfig.lockedLabels(for: appSettings.modelProfile)
-    }
-
     private var currentPresetName: String {
         privacy.presets.first(where: { $0.id == privacy.activePresetID })?.name
             ?? localized("preset_none")
+    }
+
+    /// 当前默认贴纸的文件名（未单独设置时显示内置默认贴纸）。
+    private var currentStickerName: String {
+        if let uri = privacy.stickerUri {
+            return (uri as NSString).lastPathComponent
+        }
+        return "Default-stickers.png"
+    }
+
+    /// 已选反向标签的显示名（未设置时显示提示）。
+    private var reverseLabelsSummary: String {
+        if privacy.reverseLabels.isEmpty {
+            return localized("label_reverse_none")
+        }
+        return privacy.reverseLabels
+            .map { DetectionConfig.displayName(for: $0) }
+            .joined(separator: "、")
     }
 
     var body: some View {
@@ -42,10 +62,7 @@ struct SettingsView: View {
                 // MARK: - 标签设置
                 Section(localizedKey("label_labels")) {
                     ForEach(labels, id: \.self) { label in
-                        LabelSettingsRow(
-                            label: label,
-                            isLocked: lockedLabels.contains(label)
-                        )
+                        LabelSettingsRow(label: label)
                     }
                 }
 
@@ -77,6 +94,71 @@ struct SettingsView: View {
                             .monospacedDigit()
                             .frame(width: 32, alignment: .trailing)
                     }
+                    HStack {
+                        Text(localizedKey("label_mask_scale"))
+                        Slider(value: Binding(
+                            get: { Double(privacy.maskScale) },
+                            set: { privacy.maskScale = CGFloat($0) }
+                        ), in: 0.1...3, step: 0.1)
+                        Text(String(format: "%.1fx", privacy.maskScale))
+                            .monospacedDigit()
+                            .frame(width: 40, alignment: .trailing)
+                    }
+                    Toggle(localizedKey("label_circular_mask"),
+                           isOn: $privacy.circularMaskEnabled)
+                }
+
+                // MARK: - 贴纸
+                Section(localizedKey("label_sticker")) {
+                    LabeledContent(localizedKey("label_current_sticker"),
+                                   value: currentStickerName)
+                    PhotosPicker(selection: $stickerItem, matching: .images) {
+                        Label(localizedKey("action_pick_custom_sticker"),
+                              systemImage: "photo")
+                            .foregroundColor(.red)
+                    }
+                    .onChange(of: stickerItem) { _, newItem in
+                        guard let newItem else { return }
+                        Task {
+                            if let data = try? await newItem.loadTransferable(type: Data.self),
+                               let relativePath = StickerLoader.saveCustomSticker(
+                                   data: data, fileName: "sticker.png") {
+                                await MainActor.run {
+                                    privacy.stickerUri = relativePath
+                                }
+                            }
+                        }
+                    }
+                    Button(localizedKey("action_use_default_sticker")) {
+                        privacy.stickerUri = nil
+                    }
+                    .buttonStyle(.bordered)
+                }
+
+                // MARK: - 遮挡红边
+                Section(localizedKey("label_outline")) {
+                    Toggle(localizedKey("label_outline_enabled"),
+                           isOn: $privacy.maskOutlineEnabled)
+                    Button(localizedKey("action_outline_labels")) {
+                        showingOutlinePicker = true
+                    }
+                    .disabled(!privacy.maskOutlineEnabled)
+                }
+
+                // MARK: - 反向遮挡
+                Section(localizedKey("label_reverse")) {
+                    Button(localizedKey("action_reverse_labels")) {
+                        showingReversePicker = true
+                    }
+                    Text(reverseLabelsSummary)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    Toggle(localizedKey("label_reverse_pre_render"),
+                           isOn: $privacy.reversePreRenderEnabled)
+                    Toggle(localizedKey("label_reverse_miss_fullscreen"),
+                           isOn: $privacy.reverseLabelMissFullscreenEnabled)
+                    Toggle(localizedKey("label_empty_fullscreen"),
+                           isOn: $privacy.accessibilityEmptyReverseFullscreenEnabled)
                 }
 
                 // MARK: - 预设
@@ -103,7 +185,7 @@ struct SettingsView: View {
                                         .foregroundColor(.accentColor)
                                 }
                                 Button(localizedKey("action_apply_preset")) {
-                                    privacy.applyPreset(preset)
+                                    privacy.applyPreset(preset, profile: appSettings.modelProfile)
                                     noticeMessage = localizedFormat("preset_applied",
                                                                     preset.name)
                                 }
@@ -124,6 +206,12 @@ struct SettingsView: View {
                     } label: {
                         Label(localizedKey("action_save_preset"),
                               systemImage: "plus")
+                    }
+                    Button {
+                        showingPresetImporter = true
+                    } label: {
+                        Label(localizedKey("action_import_preset"),
+                              systemImage: "square.and.arrow.down")
                     }
                 }
 
@@ -181,6 +269,35 @@ struct SettingsView: View {
                 }
             }
             .navigationTitle(localizedKey("tab_settings"))
+            .fileImporter(
+                isPresented: $showingPresetImporter,
+                allowedContentTypes: [UTType.zip],
+                allowsMultipleSelection: false
+            ) { result in
+                switch result {
+                case .success(let urls):
+                    if let url = urls.first {
+                        importPreset(from: url)
+                    }
+                case .failure(let error):
+                    noticeMessage = localizedFormat("preset_import_failed",
+                                                    error.localizedDescription)
+                }
+            }
+            .sheet(isPresented: $showingOutlinePicker) {
+                LabelToggleSheet(
+                    titleKey: "action_outline_labels",
+                    selected: $privacy.maskOutlineLabels,
+                    labels: labels
+                )
+            }
+            .sheet(isPresented: $showingReversePicker) {
+                LabelToggleSheet(
+                    titleKey: "action_reverse_labels",
+                    selected: $privacy.reverseLabels,
+                    labels: labels
+                )
+            }
             .alert(localizedKey("preset_name_prompt"),
                    isPresented: $showingPresetNamePrompt) {
                 TextField(localizedKey("preset_name_placeholder"),
@@ -188,7 +305,7 @@ struct SettingsView: View {
                 Button(localizedKey("action_confirm")) {
                     let name = newPresetName.trimmingCharacters(in: .whitespaces)
                     guard !name.isEmpty else { return }
-                    privacy.savePreset(name: name)
+                    privacy.savePreset(name: name, profile: appSettings.modelProfile)
                     noticeMessage = localizedFormat("preset_saved", name)
                     newPresetName = ""
                 }
@@ -241,6 +358,36 @@ struct SettingsView: View {
             }
         }
     }
+
+    // MARK: - 预设导入
+
+    /// 从文件应用选 `.svpreset.zip`（或 `.zip`）导入预设。
+    private func importPreset(from url: URL) {
+        let didAccess = url.startAccessingSecurityScopedResource()
+        defer {
+            if didAccess { url.stopAccessingSecurityScopedResource() }
+        }
+        guard let data = try? Data(contentsOf: url) else {
+            noticeMessage = localized("preset_import_failed_read")
+            return
+        }
+        let result = privacy.importPresetPackage(zipData: data)
+        if let error = result.error {
+            noticeMessage = localizedFormat("preset_import_failed", error)
+        } else if result.imported.isEmpty {
+            noticeMessage = localized("preset_import_none")
+        } else {
+            let imported = result.imported.joined(separator: "、")
+            if result.skipped.isEmpty {
+                noticeMessage = localizedFormat("preset_imported", imported)
+            } else {
+                noticeMessage = localizedFormat(
+                    "preset_imported_skipped",
+                    imported,
+                    result.skipped.joined(separator: "、"))
+            }
+        }
+    }
 }
 
 // MARK: - 单个标签的设置行
@@ -248,7 +395,18 @@ struct SettingsView: View {
 private struct LabelSettingsRow: View {
     @EnvironmentObject private var privacy: PrivacySettingsManager
     let label: String
-    let isLocked: Bool
+    @State private var stickerItem: PhotosPickerItem?
+
+    /// 该标签当前贴纸的文件名（未单独设置时显示默认贴纸）。
+    private var stickerDisplayName: String {
+        if let uri = privacy.labelStickerUris[label] {
+            return (uri as NSString).lastPathComponent
+        }
+        if let uri = privacy.stickerUri {
+            return (uri as NSString).lastPathComponent
+        }
+        return "Default-stickers.png"
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -256,21 +414,12 @@ private struct LabelSettingsRow: View {
                 Text(DetectionConfig.displayName(for: label))
                     .font(.subheadline)
                 Spacer()
-                if isLocked {
-                    Text(localizedKey("label_locked"))
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(Color.secondary.opacity(0.15))
-                        .clipShape(RoundedRectangle(cornerRadius: 4))
-                }
+                // 锁定已取消：所有标签都可自由开关（见 DetectionConfig）。
                 Toggle(localizedKey("label_enabled"), isOn: Binding(
                     get: { privacy.isEnabled(label) },
                     set: { privacy.labelEnabled[label] = $0 }
                 ))
                 .labelsHidden()
-                .disabled(isLocked)
             }
             Picker(localizedKey("label_effect"), selection: Binding(
                 get: { privacy.effect(for: label) },
@@ -294,7 +443,76 @@ private struct LabelSettingsRow: View {
                     .monospacedDigit()
                     .frame(width: 36, alignment: .trailing)
             }
+            // 该标签效果为贴纸时，可单独选贴纸（与 Android 一致：
+            // 点标签进设置里选该标签的贴纸）。
+            if privacy.effect(for: label) == .sticker {
+                HStack {
+                    Text(localizedKey("label_current_sticker"))
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    Text(stickerDisplayName)
+                        .font(.caption)
+                    Spacer()
+                    PhotosPicker(selection: $stickerItem, matching: .images) {
+                        Text(localizedKey("action_pick_custom_sticker"))
+                            .font(.caption)
+                            .foregroundColor(.red)
+                    }
+                    .onChange(of: stickerItem) { _, newItem in
+                        guard let newItem else { return }
+                        Task {
+                            if let data = try? await newItem.loadTransferable(type: Data.self),
+                               let relativePath = StickerLoader.saveCustomSticker(
+                                   data: data, fileName: "sticker.png") {
+                                await MainActor.run {
+                                    privacy.labelStickerUris[label] = relativePath
+                                }
+                            }
+                        }
+                    }
+                    Button(localizedKey("action_use_default_sticker")) {
+                        privacy.labelStickerUris.removeValue(forKey: label)
+                    }
+                    .font(.caption)
+                    .buttonStyle(.bordered)
+                }
+            }
         }
         .padding(.vertical, 4)
+    }
+}
+
+// MARK: - 标签多选表（描边部位 / 反向标签）
+
+private struct LabelToggleSheet: View {
+    @Binding var selected: [String]
+    let titleKey: String
+    let labels: [String]
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                ForEach(labels, id: \.self) { label in
+                    Toggle(DetectionConfig.displayName(for: label), isOn: Binding(
+                        get: { selected.contains(label) },
+                        set: { isOn in
+                            if isOn {
+                                if !selected.contains(label) { selected.append(label) }
+                            } else {
+                                selected.removeAll { $0 == label }
+                            }
+                        }
+                    ))
+                }
+            }
+            .navigationTitle(localizedKey(titleKey))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(localizedKey("action_done")) { dismiss() }
+                }
+            }
+        }
     }
 }
