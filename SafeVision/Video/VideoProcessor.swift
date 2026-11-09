@@ -59,6 +59,12 @@ private struct PendingFrame {
     let pixelBuffer: CVPixelBuffer
 }
 
+/// 音频直传（AAC passthrough）运行时系统性失败的内部信号。
+/// `run` 捕获后改走 PCM → AAC 重编码重试一次；不直接展示给用户。
+private struct AudioPassthroughFailure: Error {
+    let reason: String
+}
+
 /// 视频处理主流程（AVFoundation，单遍流式处理）。
 ///
 /// 对应 Android `VideoProcessingManager` + `VideoDetectionProcessor` +
@@ -92,6 +98,11 @@ public final class VideoProcessor: ObservableObject {
         /// 输出帧率上限。
         static let maxFrameRate: Float = 30
         static let maxFrameRateTimescale: Int32 = 30
+        /// 探采样时最多跳过的空音频采样数（与 Android
+        /// `MAX_EMPTY_AUDIO_SAMPLES_TO_SKIP = 16` 一致）。
+        static let maxEmptyAudioSamplesToSkip = 16
+        /// 直传 append 连续失败达到该次数时，改走重编码重试。
+        static let maxConsecutiveAudioAppendFailures = 3
     }
 
     private let workQueue = DispatchQueue(
@@ -171,9 +182,29 @@ public final class VideoProcessor: ObservableObject {
                 sourceURL: sourceURL,
                 engine: engine,
                 runState: runState,
-                startedWriting: &startedWriting
+                startedWriting: &startedWriting,
+                forceReencodeAudio: false
             )
             result = .success(url)
+        } catch let failure as AudioPassthroughFailure
+            where !runState.isCancelled {
+            // 音频直传运行时系统性失败：改走 PCM → AAC 重编码重试一次。
+            // 取消时不重试，直接按取消处理。
+            NSLog("[VideoProcessor] 音频直传失败（\(failure.reason)），改用重编码重试")
+            publishOnMain { self.statusMessage = "音频直传失败，改用重编码重试…" }
+            startedWriting = false
+            do {
+                let url = try processInternal(
+                    sourceURL: sourceURL,
+                    engine: engine,
+                    runState: runState,
+                    startedWriting: &startedWriting,
+                    forceReencodeAudio: true
+                )
+                result = .success(url)
+            } catch {
+                result = .failure(error)
+            }
         } catch {
             // 不再静默重试无音轨输出：音频保不住时 `processInternal`
             // 会抛 `audioFailed`，让用户知道而不是悄悄出无声视频。
@@ -210,7 +241,8 @@ public final class VideoProcessor: ObservableObject {
         sourceURL: URL,
         engine: DetectionEngine,
         runState: VideoProcessingRunState,
-        startedWriting: inout Bool
+        startedWriting: inout Bool,
+        forceReencodeAudio: Bool
     ) throws -> URL {
         let asset = AVURLAsset(url: sourceURL)
         guard let videoTrack = asset.tracks(withMediaType: .video).first else {
@@ -325,48 +357,22 @@ public final class VideoProcessor: ObservableObject {
         // AAC 直传，否则解码成 PCM 再重编码为 AAC）
         // 源有音轨时音频必须接上：直传与重编码都失败直接报错，
         // 不静默输出无声视频。源没有音轨时正常输出无声视频。
+        // 只把 reader 输出接进 reader；writer 输入只做 canAdd 校验，
+        // 不立即 writer.add——探采样确认音轨有有效采样后，
+        // 在 writer.startWriting 之前再接进 writer。
         var audioOutput: AVAssetReaderTrackOutput?
         var audioInput: AVAssetWriterInput?
+        var audioUsedPassthrough = false
         if let audioTrack = asset.tracks(withMediaType: .audio).first {
-            if isAACAudio(track: audioTrack) {
-                // AAC 直传（outputSettings 为 nil 即不重编码）。
-                let passthroughOutput = AVAssetReaderTrackOutput(track: audioTrack, outputSettings: nil)
-                passthroughOutput.alwaysCopiesSampleData = false
-                let passthroughInput = AVAssetWriterInput(mediaType: .audio, outputSettings: nil)
-                passthroughInput.expectsMediaDataInRealTime = false
-                if reader.canAdd(passthroughOutput), writer.canAdd(passthroughInput) {
-                    reader.add(passthroughOutput)
-                    writer.add(passthroughInput)
-                    audioOutput = passthroughOutput
-                    audioInput = passthroughInput
-                }
-            }
-            if audioOutput == nil, let format = audioFormat(for: audioTrack) {
-                // 非 AAC 或直传接不上：解码成 PCM 再重编码为 AAC。
-                let pcmOutput = AVAssetReaderTrackOutput(track: audioTrack, outputSettings: [
-                    AVFormatIDKey: kAudioFormatLinearPCM,
-                    AVSampleRateKey: format.sampleRate,
-                    AVNumberOfChannelsKey: format.channels,
-                    AVLinearPCMBitDepthKey: 16,
-                    AVLinearPCMIsBigEndianKey: false,
-                    AVLinearPCMIsFloatKey: false,
-                    AVLinearPCMIsNonInterleaved: false
-                ])
-                pcmOutput.alwaysCopiesSampleData = false
-                let aacInput = AVAssetWriterInput(mediaType: .audio, outputSettings: [
-                    AVFormatIDKey: kAudioFormatMPEG4AAC,
-                    AVSampleRateKey: format.sampleRate,
-                    AVNumberOfChannelsKey: format.channels,
-                    AVEncoderBitRateKey: 160000
-                ])
-                aacInput.expectsMediaDataInRealTime = false
-                if reader.canAdd(pcmOutput), writer.canAdd(aacInput) {
-                    reader.add(pcmOutput)
-                    writer.add(aacInput)
-                    audioOutput = pcmOutput
-                    audioInput = aacInput
-                }
-            }
+            let pair = makeAudioPair(
+                track: audioTrack,
+                forceReencode: forceReencodeAudio,
+                reader: reader,
+                writer: writer
+            )
+            audioOutput = pair.output
+            audioInput = pair.input
+            audioUsedPassthrough = pair.passthrough
             if audioOutput == nil {
                 throw VideoProcessingError.audioFailed("音频轨道无法接入（直传与重编码均失败）")
             }
@@ -399,6 +405,39 @@ public final class VideoProcessor: ObservableObject {
                 reader.error?.localizedDescription ?? "读取失败"
             )
         }
+
+        // MARK: 探采样（对齐 Android `findFirstReadableSample`）
+        // 接好音频输出后立刻读一个有效采样验证：音轨存在但读不到
+        // 有效采样时当作“空音轨”，只出视频、不报错。
+        // 跳过最多 16 个空采样；第一个非空采样存进 pendingAudioSample，
+        // 后续 drainAudio 会先写它（不丢弃）。
+        var pendingAudioSample: CMSampleBuffer?
+        if let output = audioOutput, let input = audioInput {
+            var firstSample: CMSampleBuffer?
+            var emptySkipped = 0
+            while emptySkipped <= Constants.maxEmptyAudioSamplesToSkip {
+                guard let sample = output.copyNextSampleBuffer() else { break }
+                if CMSampleBufferGetNumSamples(sample) == 0
+                    || CMSampleBufferGetTotalSampleSize(sample) == 0 {
+                    emptySkipped += 1
+                    continue
+                }
+                firstSample = sample
+                break
+            }
+            if let firstSample {
+                pendingAudioSample = firstSample
+                guard writer.canAdd(input) else {
+                    throw VideoProcessingError.audioFailed("音频输入无法接入")
+                }
+                writer.add(input)
+            } else {
+                // 空音轨：不接音频输入，只出视频。
+                audioOutput = nil
+                audioInput = nil
+            }
+        }
+
         guard writer.startWriting() else {
             throw VideoProcessingError.writerFailed(
                 writer.error?.localizedDescription ?? "写入失败"
@@ -413,9 +452,15 @@ public final class VideoProcessor: ObservableObject {
         var frameIndex = 0
         var processedFrames = 0
         var lastAppendedPTS: CMTime?
-        var pendingAudioSample: CMSampleBuffer?
         /// 成功写入的音频采样数（源有音轨时应 > 0；为 0 说明音频丢了）。
         var appendedAudioSamples = 0
+        /// 直传 append 连续失败次数；达到阈值时改走重编码重试。
+        var audioAppendFailures = 0
+        /// 直传已系统性失败（帧循环里据此抛 AudioPassthroughFailure）。
+        var audioPassthroughFailed = false
+        /// 音频失败原因（超时 / append 失败时记录的 writer/reader 状态），
+        /// 报错时带进错误信息，方便诊断。
+        var audioFailureReason: String?
         var didDetect = false
         let minFrameInterval = CMTime(
             value: 1,
@@ -453,10 +498,29 @@ public final class VideoProcessor: ObservableObject {
                     pendingAudioSample = sample
                     return
                 }
-                guard waitUntilReady(audioInput) else { return }
+                guard waitUntilReady(audioInput) else {
+                    // 超时（非取消）：记下原因，供报错与重试诊断用。
+                    if !runState.isCancelled, audioFailureReason == nil {
+                        audioFailureReason = "等待音频输入就绪超时（writer.status=\(writer.status)，writer.error=\(writer.error?.localizedDescription ?? "无")，reader.error=\(reader.error?.localizedDescription ?? "无")）"
+                    }
+                    return
+                }
                 if audioInput.append(sample) {
                     appendedAudioSamples += 1
+                    audioAppendFailures = 0
                 } else {
+                    audioAppendFailures += 1
+                    if audioFailureReason == nil {
+                        audioFailureReason = "音频采样 append 失败（writer.status=\(writer.status)，writer.error=\(writer.error?.localizedDescription ?? "无")，reader.error=\(reader.error?.localizedDescription ?? "无")）"
+                    }
+                    // 直传系统性失败：首个采样就失败，或连续失败达到阈值。
+                    // 标记后帧循环抛 AudioPassthroughFailure，
+                    // run 改走 PCM → AAC 重编码重试一次。
+                    if audioUsedPassthrough
+                        && (audioAppendFailures >= Constants.maxConsecutiveAudioAppendFailures
+                            || (appendedAudioSamples == 0 && audioAppendFailures >= 1)) {
+                        audioPassthroughFailed = true
+                    }
                     return
                 }
             }
@@ -565,6 +629,12 @@ public final class VideoProcessor: ObservableObject {
                 )
                 frameIndex += 1
                 drainAudio(upTo: pts, drainAll: false)
+                // 直传已系统性失败：立即中断，run 改走重编码重试一次。
+                if audioPassthroughFailed {
+                    throw AudioPassthroughFailure(
+                        reason: audioFailureReason ?? "音频直传连续失败"
+                    )
+                }
                 if pendingFrames.count >= stride {
                     let segment = pendingFrames
                     pendingFrames = []
@@ -585,10 +655,25 @@ public final class VideoProcessor: ObservableObject {
         }
         drainAudio(upTo: nil, drainAll: true)
         if runState.isCancelled { throw VideoProcessingError.cancelled }
+        // 直传在最后的 drain 里才系统性失败：同样改走重编码重试。
+        if audioPassthroughFailed {
+            throw AudioPassthroughFailure(
+                reason: audioFailureReason ?? "音频直传连续失败"
+            )
+        }
         // 源有音轨且音频已接入，但一个采样都没写进去：说明音频丢了，
-        // 直接报错，不交付无声视频。
+        // 不交付无声视频。直传 0 采样时改走重编码重试一次；
+        // 重编码也 0 采样（或本来走的就是重编码）才直接报错，
+        // 并把诊断原因带进错误信息。
         if audioOutput != nil, appendedAudioSamples == 0 {
-            throw VideoProcessingError.audioFailed("音频采样未能写入（已写入 0 个采样）")
+            let detail = "音频采样未能写入（已写入 0 个采样）"
+                + (audioFailureReason.map { "：\($0)" } ?? "")
+            if audioUsedPassthrough, !forceReencodeAudio {
+                throw AudioPassthroughFailure(
+                    reason: audioFailureReason ?? detail
+                )
+            }
+            throw VideoProcessingError.audioFailed(detail)
         }
 
         // MARK: 收尾
@@ -662,6 +747,57 @@ public final class VideoProcessor: ObservableObject {
     }
 
     // MARK: - 音频格式工具
+
+    /// 音频接入：AAC 直传，否则解码成 PCM 再重编码为 AAC
+    ///（与 Android `VideoCodecUtils.AudioTrackCopier` 一致）。
+    /// 只把 reader 输出接进 reader；writer 输入只做 canAdd 校验后返回，
+    /// 由调用方在探采样确认音轨有有效采样后、writer.startWriting 之前
+    /// 再 writer.add。`forceReencode` 为 true 时跳过直传，直接走重编码
+    ///（直传运行时失败后的重试用）。
+    /// 返回 (reader 输出, writer 输入, 是否直传)；三者全空表示两路都接不上。
+    private func makeAudioPair(
+        track: AVAssetTrack,
+        forceReencode: Bool,
+        reader: AVAssetReader,
+        writer: AVAssetWriter
+    ) -> (output: AVAssetReaderTrackOutput?, input: AVAssetWriterInput?, passthrough: Bool) {
+        if !forceReencode, isAACAudio(track: track) {
+            // AAC 直传（outputSettings 为 nil 即不重编码）。
+            let passthroughOutput = AVAssetReaderTrackOutput(track: track, outputSettings: nil)
+            passthroughOutput.alwaysCopiesSampleData = false
+            let passthroughInput = AVAssetWriterInput(mediaType: .audio, outputSettings: nil)
+            passthroughInput.expectsMediaDataInRealTime = false
+            if reader.canAdd(passthroughOutput), writer.canAdd(passthroughInput) {
+                reader.add(passthroughOutput)
+                return (passthroughOutput, passthroughInput, true)
+            }
+        }
+        if let format = audioFormat(for: track) {
+            // 非 AAC 或直传接不上：解码成 PCM 再重编码为 AAC。
+            let pcmOutput = AVAssetReaderTrackOutput(track: track, outputSettings: [
+                AVFormatIDKey: kAudioFormatLinearPCM,
+                AVSampleRateKey: format.sampleRate,
+                AVNumberOfChannelsKey: format.channels,
+                AVLinearPCMBitDepthKey: 16,
+                AVLinearPCMIsBigEndianKey: false,
+                AVLinearPCMIsFloatKey: false,
+                AVLinearPCMIsNonInterleaved: false
+            ])
+            pcmOutput.alwaysCopiesSampleData = false
+            let aacInput = AVAssetWriterInput(mediaType: .audio, outputSettings: [
+                AVFormatIDKey: kAudioFormatMPEG4AAC,
+                AVSampleRateKey: format.sampleRate,
+                AVNumberOfChannelsKey: format.channels,
+                AVEncoderBitRateKey: 160000
+            ])
+            aacInput.expectsMediaDataInRealTime = false
+            if reader.canAdd(pcmOutput), writer.canAdd(aacInput) {
+                reader.add(pcmOutput)
+                return (pcmOutput, aacInput, false)
+            }
+        }
+        return (nil, nil, false)
+    }
 
     /// 音轨是否为 AAC（可直传进 MP4）。与 Android
     /// `VideoCodecUtils.canPassthroughToMp4` 一致（只认 AAC）。
