@@ -90,6 +90,19 @@ public final class DetectionEngine: ObservableObject {
             // Eye derivation is best-effort: a Vision failure must not drop
             // the YOLO detections already produced.
         }
+        // 诊断日志：每次检测打印前 5 个检出（label + score + box）与当前
+        // 模型 profile、后端；下次再报“准确率低”时直接看日志，不用盲猜。
+        let backend = provider.isUsingMetalDelegate ? "Metal" : "CPU"
+        let topDetections = detections
+            .sorted { $0.score > $1.score }
+            .prefix(5)
+            .map { detection in
+                let box = detection.box
+                return "\(detection.label):\(String(format: "%.3f", detection.score))" +
+                    " [\(Int(box.minX)),\(Int(box.minY)),\(Int(box.width))x\(Int(box.height))]"
+            }
+            .joined(separator: ", ")
+        NSLog("[DetectionEngine] 检测完成：profile=\(profile)，backend=\(backend)，检出 \(detections.count) 个，前 5：\(topDetections.isEmpty ? "无" : topDetections)")
         return detections
     }
 
