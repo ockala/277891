@@ -137,6 +137,8 @@
 "browser_masked_count" = "Masked %d images";
 "browser_loading" = "Loading…";
 "browser_hint" = "Enter a URL to start browsing";
+"browser_load_failed" = "Load failed: %@";
+"browser_invalid_url" = "Invalid URL";
 
 /* Preset import */
 "action_import_preset" = "Import Preset";
