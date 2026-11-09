@@ -137,6 +137,8 @@
 "browser_masked_count" = "%d장 이미지 마스킹됨";
 "browser_loading" = "로딩 중…";
 "browser_hint" = "URL을 입력해 탐색 시작";
+"browser_load_failed" = "로드 실패: %@";
+"browser_invalid_url" = "잘못된 URL";
 
 /* Preset import */
 "action_import_preset" = "프리셋 가져오기";
