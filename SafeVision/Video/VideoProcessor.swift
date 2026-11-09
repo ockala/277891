@@ -10,6 +10,9 @@ public enum VideoProcessingError: Error, LocalizedError {
     case invalidSource
     case readerFailed(String)
     case writerFailed(String)
+    /// 音频无法保留（直传与重编码都失败，或源有音轨但 0 个采样被写入）。
+    /// 不静默输出无声视频：音频保不住时直接报错，让用户知道。
+    case audioFailed(String)
     case cancelled
 
     public var errorDescription: String? {
@@ -22,6 +25,8 @@ public enum VideoProcessingError: Error, LocalizedError {
             return "视频解码失败：\(message)"
         case .writerFailed(let message):
             return "视频编码失败：\(message)"
+        case .audioFailed(let message):
+            return "音频无法保留：\(message)"
         case .cancelled:
             return "处理已取消"
         }
@@ -61,7 +66,8 @@ private struct PendingFrame {
 /// `AppSettingsManager.shared.videoDetectStride` 帧检测一次（分段中间
 /// 帧），其余帧用 `VideoFrameInterpolator` 在相邻两次检测之间插值 →
 /// `MaskRenderer` 打码 → AVAssetWriterInputPixelBufferAdaptor 写出
-/// H.264，音频直传（失败时回退为无音轨输出）。
+/// H.264，音频 AAC 直传（非 AAC 则重编码为 AAC；保不住直接报错，
+/// 不静默输出无音轨视频）。
 ///
 /// 码率与 Android `DetectionConfig.VideoProcessing` 一致：目标码率 =
 /// 原视频码率 × 0.18，夹在 3Mbps…30Mbps 之间；输出帧率上限 30fps
@@ -164,30 +170,14 @@ public final class VideoProcessor: ObservableObject {
             let url = try processInternal(
                 sourceURL: sourceURL,
                 engine: engine,
-                includeAudio: true,
                 runState: runState,
                 startedWriting: &startedWriting
             )
             result = .success(url)
         } catch {
-            if !startedWriting, !runState.isCancelled {
-                // 写入开始前就失败，很可能与音轨有关：重试一次无音轨输出。
-                startedWriting = false
-                do {
-                    let url = try processInternal(
-                        sourceURL: sourceURL,
-                        engine: engine,
-                        includeAudio: false,
-                        runState: runState,
-                        startedWriting: &startedWriting
-                    )
-                    result = .success(url)
-                } catch {
-                    result = .failure(error)
-                }
-            } else {
-                result = .failure(error)
-            }
+            // 不再静默重试无音轨输出：音频保不住时 `processInternal`
+            // 会抛 `audioFailed`，让用户知道而不是悄悄出无声视频。
+            result = .failure(error)
         }
         finish(result: result, completion: completion)
     }
@@ -219,7 +209,6 @@ public final class VideoProcessor: ObservableObject {
     private func processInternal(
         sourceURL: URL,
         engine: DetectionEngine,
-        includeAudio: Bool,
         runState: VideoProcessingRunState,
         startedWriting: inout Bool
     ) throws -> URL {
@@ -231,10 +220,29 @@ public final class VideoProcessor: ObservableObject {
         guard naturalSize.width > 0, naturalSize.height > 0 else {
             throw VideoProcessingError.invalidSource
         }
+        // 输出尺寸取编码帧尺寸（`formatDescriptions`），不是显示尺寸
+        // `naturalSize`：iPhone 竖屏视频的编码帧是横屏（如 1920x1080），
+        // 显示尺寸是竖屏（如 1080x1920），两者由 `preferredTransform`
+        // 的 90° 旋转联系。旧实现用 `naturalSize` 当输出尺寸，把
+        // 1920x1080 的解码帧硬画进 1080x1920 的缓冲，导致画面拉伸、
+        // 马赛克变横条纹、打码位置错位；方向仍由 `preferredTransform`
+        // 写到编码输入上（与原来一致）。
+        // 取不到编码尺寸时回退为显示尺寸。
+        let encodedSize: CGSize
+        if let formatDescription = videoTrack.formatDescriptions.first as? CMVideoFormatDescription {
+            let dimensions = CMVideoFormatDescriptionGetDimensions(formatDescription)
+            if dimensions.width > 0, dimensions.height > 0 {
+                encodedSize = CGSize(width: CGFloat(dimensions.width), height: CGFloat(dimensions.height))
+            } else {
+                encodedSize = naturalSize
+            }
+        } else {
+            encodedSize = naturalSize
+        }
         // H.264 要求偶数尺寸；奇数尺寸向下对齐
         //（与 Android `VideoCodecUtils.alignDimensionToEncoder` 一致）。
-        let outWidth = max(2, Int(naturalSize.width.rounded()) & ~1)
-        let outHeight = max(2, Int(naturalSize.height.rounded()) & ~1)
+        let outWidth = max(2, Int(encodedSize.width.rounded()) & ~1)
+        let outHeight = max(2, Int(encodedSize.height.rounded()) & ~1)
         let nominalFPS = videoTrack.nominalFrameRate
         let sourceFPS: Float = nominalFPS > 0 ? nominalFPS : 30
         let outputFPS = min(sourceFPS, Constants.maxFrameRate)
@@ -309,20 +317,54 @@ public final class VideoProcessor: ObservableObject {
         }
         writer.add(videoInput)
 
-        // MARK: 音频直传（outputSettings 为 nil 即不重编码）
-        // 任何一步失败都回退为无音轨输出，不影响画面处理。
+        // MARK: 音频（与 Android `VideoCodecUtils.AudioTrackCopier` 一致：
+        // AAC 直传，否则解码成 PCM 再重编码为 AAC）
+        // 源有音轨时音频必须接上：直传与重编码都失败直接报错，
+        // 不静默输出无声视频。源没有音轨时正常输出无声视频。
         var audioOutput: AVAssetReaderTrackOutput?
         var audioInput: AVAssetWriterInput?
-        if includeAudio, let audioTrack = asset.tracks(withMediaType: .audio).first {
-            let candidateOutput = AVAssetReaderTrackOutput(track: audioTrack, outputSettings: nil)
-            candidateOutput.alwaysCopiesSampleData = false
-            let candidateInput = AVAssetWriterInput(mediaType: .audio, outputSettings: nil)
-            candidateInput.expectsMediaDataInRealTime = false
-            if reader.canAdd(candidateOutput), writer.canAdd(candidateInput) {
-                reader.add(candidateOutput)
-                writer.add(candidateInput)
-                audioOutput = candidateOutput
-                audioInput = candidateInput
+        if let audioTrack = asset.tracks(withMediaType: .audio).first {
+            if isAACAudio(track: audioTrack) {
+                // AAC 直传（outputSettings 为 nil 即不重编码）。
+                let passthroughOutput = AVAssetReaderTrackOutput(track: audioTrack, outputSettings: nil)
+                passthroughOutput.alwaysCopiesSampleData = false
+                let passthroughInput = AVAssetWriterInput(mediaType: .audio, outputSettings: nil)
+                passthroughInput.expectsMediaDataInRealTime = false
+                if reader.canAdd(passthroughOutput), writer.canAdd(passthroughInput) {
+                    reader.add(passthroughOutput)
+                    writer.add(passthroughInput)
+                    audioOutput = passthroughOutput
+                    audioInput = passthroughInput
+                }
+            }
+            if audioOutput == nil, let format = audioFormat(for: audioTrack) {
+                // 非 AAC 或直传接不上：解码成 PCM 再重编码为 AAC。
+                let pcmOutput = AVAssetReaderTrackOutput(track: audioTrack, outputSettings: [
+                    AVFormatIDKey: kAudioFormatLinearPCM,
+                    AVSampleRateKey: format.sampleRate,
+                    AVNumberOfChannelsKey: format.channels,
+                    AVLinearPCMBitDepthKey: 16,
+                    AVLinearPCMIsBigEndianKey: false,
+                    AVLinearPCMIsFloatKey: false,
+                    AVLinearPCMIsNonInterleaved: false
+                ])
+                pcmOutput.alwaysCopiesSampleData = false
+                let aacInput = AVAssetWriterInput(mediaType: .audio, outputSettings: [
+                    AVFormatIDKey: kAudioFormatMPEG4AAC,
+                    AVSampleRateKey: format.sampleRate,
+                    AVNumberOfChannelsKey: format.channels,
+                    AVEncoderBitRateKey: 160000
+                ])
+                aacInput.expectsMediaDataInRealTime = false
+                if reader.canAdd(pcmOutput), writer.canAdd(aacInput) {
+                    reader.add(pcmOutput)
+                    writer.add(aacInput)
+                    audioOutput = pcmOutput
+                    audioInput = aacInput
+                }
+            }
+            if audioOutput == nil {
+                throw VideoProcessingError.audioFailed("音频轨道无法接入（直传与重编码均失败）")
             }
         }
 
@@ -368,6 +410,8 @@ public final class VideoProcessor: ObservableObject {
         var processedFrames = 0
         var lastAppendedPTS: CMTime?
         var pendingAudioSample: CMSampleBuffer?
+        /// 成功写入的音频采样数（源有音轨时应 > 0；为 0 说明音频丢了）。
+        var appendedAudioSamples = 0
         var didDetect = false
         let minFrameInterval = CMTime(
             value: 1,
@@ -406,7 +450,11 @@ public final class VideoProcessor: ObservableObject {
                     return
                 }
                 guard waitUntilReady(audioInput) else { return }
-                if !audioInput.append(sample) { return }
+                if audioInput.append(sample) {
+                    appendedAudioSamples += 1
+                } else {
+                    return
+                }
             }
         }
 
@@ -462,14 +510,15 @@ public final class VideoProcessor: ObservableObject {
                 }
                 // 返回 false 表示编码器未就绪或写入失败（外层抛错）；
                 // 单帧取不到像素 / 打码失败时跳过该帧，不中断整段。
+                // 走 `renderDetections`（不是低阶的 `maskedCGImage`），
+                // 让视频帧也应用反向遮挡与全屏回退（与图片管线一致）。
                 let appended = autoreleasepool { () -> Bool in
                     guard let sourceImage = cgImage(from: frame.pixelBuffer) else {
                         return true
                     }
-                    let masked = PrivacySettingsManager.shared.maskedBoxes(for: boxes)
-                    guard let outputImage = MaskRenderer.maskedCGImage(
+                    guard let outputImage = MaskRenderer.renderDetections(
                         sourceImage,
-                        boxes: masked
+                        detections: boxes
                     ) else {
                         return true
                     }
@@ -532,6 +581,11 @@ public final class VideoProcessor: ObservableObject {
         }
         drainAudio(upTo: nil, drainAll: true)
         if runState.isCancelled { throw VideoProcessingError.cancelled }
+        // 源有音轨且音频已接入，但一个采样都没写进去：说明音频丢了，
+        // 直接报错，不交付无声视频。
+        if audioOutput != nil, appendedAudioSamples == 0 {
+            throw VideoProcessingError.audioFailed("音频采样未能写入（已写入 0 个采样）")
+        }
 
         // MARK: 收尾
         publishOnMain { self.statusMessage = "正在编码…" }
@@ -567,6 +621,10 @@ public final class VideoProcessor: ObservableObject {
 
     /// 把打码后的 CGImage 画进编码器的像素缓冲池（BGRA，与 adaptor 一致；
     /// 尺寸与输出尺寸不符时按输出尺寸缩放，顺带处理奇数尺寸对齐）。
+    ///
+    /// 注意翻转：`CGContext(data:...)` 是底朝上的坐标系（原点在左下角），
+    /// 直接画 CGImage 会上下颠倒。先 `translate + scale(1, -1)` 翻转，
+    /// 再画图，输出才与原视频方向一致。旧实现没翻转，视频整段倒着。
     private func renderToPixelBuffer(
         _ image: CGImage,
         pool: CVPixelBufferPool?,
@@ -593,8 +651,37 @@ public final class VideoProcessor: ObservableObject {
         ) else {
             return nil
         }
+        context.translateBy(x: 0, y: CGFloat(height))
+        context.scaleBy(x: 1, y: -1)
         context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
         return pixelBuffer
+    }
+
+    // MARK: - 音频格式工具
+
+    /// 音轨是否为 AAC（可直传进 MP4）。与 Android
+    /// `VideoCodecUtils.canPassthroughToMp4` 一致（只认 AAC）。
+    private func isAACAudio(track: AVAssetTrack) -> Bool {
+        guard let formatDescription = track.formatDescriptions.first as? CMAudioFormatDescription else {
+            return false
+        }
+        let mediaSubType = CMFormatDescriptionGetMediaSubType(formatDescription)
+        return mediaSubType == kAudioFormatMPEG4AAC
+            || mediaSubType == kAudioFormatMPEG4AAC_HE
+            || mediaSubType == kAudioFormatMPEG4AAC_LD
+            || mediaSubType == kAudioFormatMPEG4AAC_ELD
+    }
+
+    /// 音轨的采样率与声道数（供重编码为 AAC 时用）。
+    private func audioFormat(for track: AVAssetTrack) -> (sampleRate: Double, channels: Int)? {
+        guard let formatDescription = track.formatDescriptions.first as? CMAudioFormatDescription,
+              let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(formatDescription) else {
+            return nil
+        }
+        let sampleRate = asbd.pointee.mSampleRate
+        let channels = Int(asbd.pointee.mChannelsPerFrame)
+        guard sampleRate > 0, channels > 0 else { return nil }
+        return (sampleRate, channels)
     }
 
     // MARK: - 后台任务与线程工具
